@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-telegram-bot==20.7
+anthropic
+supabase
+cloudinary
+apscheduler
+python-dotenv
+httpx
+pydantic>=2.0
