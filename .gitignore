@@ -14,6 +14,7 @@ build/
 .venv/
 venv/
 env/
+seed_data.py
 
 # Claude
 .claude/

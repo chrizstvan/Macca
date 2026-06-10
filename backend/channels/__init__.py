@@ -1,6 +1,25 @@
 """Channel handler modules for incoming and outgoing message routing."""
 
 from .base_handler import BaseChannelHandler
-from .telegram_handler import TelegramHandler
+from .telegram_handler import (
+    build_context,
+    create_application,
+    determine_should_process,
+    extract_clean_message,
+    handle_message,
+    init_agents,
+    send_fasilitator_alert,
+    send_response,
+)
 
-__all__ = ["BaseChannelHandler", "TelegramHandler"]
+__all__ = [
+    "BaseChannelHandler",
+    "build_context",
+    "create_application",
+    "determine_should_process",
+    "extract_clean_message",
+    "handle_message",
+    "init_agents",
+    "send_fasilitator_alert",
+    "send_response",
+]

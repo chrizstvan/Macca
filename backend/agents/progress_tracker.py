@@ -1,47 +1,55 @@
-"""Progress tracker agent that monitors and reports volunteer mission progress."""
-
-from typing import Any
+"""Progress tracker agent that handles collection reports and status checks."""
 
 from .base_agent import BaseAgent
+from backend.database.supabase_client import db
+
+SYSTEM_PROMPT = (
+    "You are the Progress Tracker for Macca, a volunteer coordination platform for waste "
+    "collection missions. Volunteers send collection reports like 'laporan 18 kg menteng' "
+    "or ask about their progress toward their quota. "
+    "When the user is reporting a collection, confirm the amount and location back to them. "
+    "When they ask for status, summarise their progress using the data provided. "
+    "Be concise, supportive, and data-driven. Format for Telegram."
+)
 
 
 class ProgressTrackerAgent(BaseAgent):
-    """Tracks volunteer progress and generates status updates.
+    """Processes collection reports (laporan) and answers progress/status queries."""
 
-    Accepts progress data from context (completed tasks, blockers, percentage)
-    and produces human-readable summaries, escalation flags, and next-step
-    recommendations for both volunteers and fasilitators.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are the Progress Tracker for Macca, a volunteer coordination platform. "
-            "Analyse volunteer progress reports and provide structured feedback. "
-            "Identify blockers, celebrate wins, suggest next steps, and flag anything "
-            "that needs fasilitator attention. "
-            "Be concise, data-driven, and supportive. Format for Telegram."
+    def __init__(self) -> None:
+        super().__init__(
+            name="progress_tracker",
+            description="Handles collection reports and progress status checks",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Analyse a progress update and return structured feedback."""
-        ctx = context or {}
+    async def process(self, message: str, context: dict) -> str:
+        """Respond to a report or status query with the volunteer's progress data."""
+        telegram_id = context.get("telegram_id")
+
         extra = ""
-        if ctx:
-            extra = (
-                f"Mission ID: {ctx.get('mission_id', 'unknown')}. "
-                f"Volunteer: {ctx.get('volunteer_name', 'unknown')}. "
-                f"Completion: {ctx.get('completion_pct', 'unknown')}%."
-            )
+        if telegram_id:
+            volunteer = await self.get_volunteer(telegram_id)
+            if volunteer:
+                reports = (
+                    db.table("reports")
+                    .select("kg_collected, location, reported_at, verified")
+                    .eq("volunteer_id", volunteer["id"])
+                    .order("reported_at", desc=True)
+                    .limit(10)
+                    .execute()
+                    .data
+                    or []
+                )
+                total = sum(float(r["kg_collected"]) for r in reports)
+                extra = (
+                    f"\n\nVolunteer: name={volunteer.get('name')}, area={volunteer.get('area')}, "
+                    f"quota={volunteer.get('quota_kg')} kg. "
+                    f"Total reported so far: {total} kg. Recent reports: {reports}"
+                )
+            else:
+                extra = "\n\nThis user is not yet registered as a volunteer."
 
-        analysis = self._call_claude(message, extra_system=extra)
-        needs_escalation = any(
-            kw in analysis.lower() for kw in ("blocker", "escalate", "urgent", "stuck")
-        )
-        return {
-            "agent": "progress_tracker",
-            "analysis": analysis,
-            "needs_escalation": needs_escalation,
-            "mission_id": ctx.get("mission_id"),
-            "volunteer_id": ctx.get("volunteer_id"),
-        }
+        history = await self.get_chat_history(telegram_id) if telegram_id else []
+        messages = history + [{"role": "user", "content": message}]
+
+        return await self.call_claude(SYSTEM_PROMPT + extra, messages)

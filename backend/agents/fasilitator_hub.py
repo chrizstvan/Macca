@@ -1,43 +1,53 @@
-"""Fasilitator hub agent that provides tools and summaries for mission facilitators."""
-
-from typing import Any
+"""Fasilitator hub agent providing operational tools for mission facilitators."""
 
 from .base_agent import BaseAgent
+from backend.config import settings
+from backend.database.supabase_client import db
+
+SYSTEM_PROMPT = (
+    "You are the Fasilitator Hub assistant for Macca, a volunteer coordination platform "
+    "for waste collection missions. You assist the fasilitator who coordinates volunteers "
+    "on the ground. Provide concise operational summaries, highlight flagged reports that "
+    "need verification, surface volunteers behind on quota, and help draft broadcasts. "
+    "Tone: efficient, clear, action-oriented. Format for Telegram."
+)
 
 
 class FasilitatorHubAgent(BaseAgent):
-    """Dedicated agent for fasilitator-facing operations.
+    """Operational summaries, flagged-report digests, and broadcast drafting for fasilitators."""
 
-    Fasilitators coordinate volunteers and missions. This agent generates
-    operational summaries, escalation digests, volunteer roster insights,
-    and recommended actions to help fasilitators manage their teams
-    efficiently from the Telegram interface.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are the Fasilitator Hub assistant for Macca, a volunteer coordination platform. "
-            "You assist mission fasilitators — the people who coordinate volunteers on the ground. "
-            "Provide concise operational summaries, highlight escalations that need attention, "
-            "suggest resource reallocation when volunteers are stuck, and help fasilitators "
-            "communicate clearly with their teams. "
-            "Tone: efficient, clear, and action-oriented. Format for Telegram."
+    def __init__(self) -> None:
+        super().__init__(
+            name="fasilitator_hub",
+            description="Operational tools and summaries for fasilitators",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Process a fasilitator request and return an operational response."""
-        ctx = context or {}
+    async def process(self, message: str, context: dict) -> str:
+        """Handle a fasilitator request; non-fasilitators are redirected politely."""
+        telegram_id = context.get("telegram_id")
+
+        if telegram_id != settings.fasilitator_telegram_id:
+            return (
+                "This command is only available to the fasilitator. "
+                "If you need help, just ask me a question directly!"
+            )
+
+        volunteers = db.table("volunteers").select("name, area, quota_kg, is_active").execute().data or []
+        flagged = (
+            db.table("reports")
+            .select("kg_collected, location, flag_reason, reported_at")
+            .eq("is_flagged", True)
+            .eq("verified", False)
+            .execute()
+            .data
+            or []
+        )
         extra = (
-            f"Fasilitator ID: {ctx.get('fasilitator_id', 'unknown')}. "
-            f"Active missions: {ctx.get('active_missions', [])}. "
-            f"Pending escalations: {ctx.get('pending_escalations', 0)}."
+            f"\n\nVolunteers ({len(volunteers)}): {volunteers}"
+            f"\nUnverified flagged reports ({len(flagged)}): {flagged}"
         )
 
-        response = self._call_claude(message, extra_system=extra)
-        return {
-            "agent": "fasilitator_hub",
-            "response": response,
-            "fasilitator_id": ctx.get("fasilitator_id"),
-            "active_missions": ctx.get("active_missions", []),
-        }
+        history = await self.get_chat_history(telegram_id)
+        messages = history + [{"role": "user", "content": message}]
+
+        return await self.call_claude(SYSTEM_PROMPT + extra, messages, max_tokens=2000)

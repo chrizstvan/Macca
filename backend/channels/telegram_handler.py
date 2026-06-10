@@ -1,124 +1,468 @@
-"""Telegram channel handler using python-telegram-bot v20."""
+"""Telegram channel handler: routing rules, replies, registration, and commands.
+
+# ------------------------------------------------------------------------- #
+# BOT SETUP IN GROUPS (Part I)                                               #
+# ------------------------------------------------------------------------- #
+# REQUIRED: Set bot privacy mode to DISABLED via BotFather
+# Steps: Open @BotFather → /mybots → select bot → Bot Settings
+#        → Group Privacy → Turn off
+# Why: By default, bots in groups only receive messages that start with /
+#      Disabling privacy mode allows bot to receive ALL messages in the group
+#      so it can detect @mentions anywhere in the message text.
+#
+# ALTERNATIVE: Add bot as GROUP ADMIN
+# If privacy mode cannot be disabled, adding bot as admin also allows
+# it to read all messages in the group.
+# ------------------------------------------------------------------------- #
+"""
 
 import logging
-from typing import Any
+import re
 
-from telegram import Bot, Update
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.constants import ChatAction, ParseMode
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
+from backend.agents import (
+    ContentCreatorAgent,
+    FasilitatorHubAgent,
+    ImpactAnalyzerAgent,
+    MissionBriefingAgent,
+    ProgressTrackerAgent,
+    RouterAgent,
+    VolunteerSupportAgent,
+)
 from backend.config import settings
-from .base_handler import BaseChannelHandler
+from backend.database.supabase_client import db
+from backend.utils.image_handler import ImageHandler
 
 logger = logging.getLogger(__name__)
 
+GROUP_CHAT_TYPES = ("group", "supergroup")
+GROUP_COMMANDS = ("/start", "/help", "/status", "/laporan")
+TELEGRAM_MAX_LEN = 4096
 
-class TelegramHandler(BaseChannelHandler):
-    """Handles all Telegram bot interactions for Macca.
+NOT_REGISTERED_GROUP_MSG = (
+    "Halo! Kamu belum terdaftar. Silakan DM bot ini untuk registrasi."
+)
+WELCOME_ASK_NAME = (
+    "Selamat datang di Generasi Bebas Plastik! 🌱\n"
+    "Kamu belum terdaftar. Boleh saya tahu nama lengkap kamu?"
+)
+HELP_MESSAGE = (
+    "<b>Macca Bot — apa yang bisa saya bantu?</b>\n\n"
+    "• Kirim laporan: <code>laporan [berat] kg [lokasi]</code>\n"
+    "• /status — progress misi kamu saat ini\n"
+    "• /laporan — format laporan\n"
+    "• /help — pesan ini\n\n"
+    "Di grup: mention saya (@bot) atau reply pesan saya.\n"
+    "Di DM: langsung ketik saja, saya selalu mendengarkan."
+)
 
-    Wraps python-telegram-bot v20's Application to register command and
-    message handlers, set the webhook, and provide send/receive helpers
-    used by the agent pipeline.
+# In-memory registration state, keyed by telegram_id (Part F)
+pending_registrations: dict[int, dict] = {}
+
+_router: RouterAgent | None = None
+_image_handler: ImageHandler | None = None
+
+
+def init_agents() -> RouterAgent:
+    """Initialise the agent registry and router exactly once."""
+    global _router, _image_handler
+    if _router is None:
+        _router = RouterAgent(
+            {
+                "mission_briefing": MissionBriefingAgent(),
+                "progress_tracker": ProgressTrackerAgent(),
+                "volunteer_support": VolunteerSupportAgent(),
+                "content_creator": ContentCreatorAgent(),
+                "impact_analyzer": ImpactAnalyzerAgent(),
+                "fasilitator_hub": FasilitatorHubAgent(),
+            }
+        )
+        _image_handler = ImageHandler()
+        logger.info("All agents initialised")
+    return _router
+
+
+# ------------------------------------------------------------------------- #
+# Part A — message routing logic (DM vs group)                               #
+# ------------------------------------------------------------------------- #
+
+def determine_should_process(update: Update, bot_username: str) -> bool:
+    """Decide whether the bot should process this update.
+
+    Private chats are always processed. Group messages are only processed
+    when the bot is @mentioned, the message replies to the bot, the message
+    starts with a known command, or the sender is the fasilitator — so the
+    bot never responds to general group chatter.
     """
+    message = update.message or update.edited_message
+    if not message or not message.chat:
+        return False
 
-    def __init__(self) -> None:
-        self._bot = Bot(token=settings.telegram_bot_token)
-        self._app: Application | None = None
+    chat_type = message.chat.type
 
-    def build_application(self) -> Application:
-        """Build and configure the telegram Application with all handlers."""
-        self._app = (
-            Application.builder()
-            .token(settings.telegram_bot_token)
-            .build()
-        )
-        self._app.add_handler(CommandHandler("start", self._handle_start))
-        self._app.add_handler(CommandHandler("help", self._handle_help))
-        self._app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
-        )
-        self._app.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
-        return self._app
+    if chat_type == "private":
+        return True
 
-    async def receive(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Parse a Telegram webhook payload into a normalised message dict."""
-        update = Update.de_json(payload, self._bot)
-        message = update.message or update.edited_message
-        if not message:
-            return {}
+    if chat_type not in GROUP_CHAT_TYPES:
+        return False
 
-        return {
-            "user_id": str(message.from_user.id),
-            "username": message.from_user.username or "",
-            "message": message.text or "",
-            "photo": message.photo[-1].file_id if message.photo else None,
-            "channel": "telegram",
-            "chat_id": str(message.chat_id),
-            "update_id": update.update_id,
+    text = message.text or message.caption or ""
+
+    # a. Bot is @mentioned anywhere in the text
+    if f"@{bot_username}".lower() in text.lower():
+        return True
+
+    # b. Direct reply to a message sent by the bot
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.is_bot:
+        return True
+
+    # c. Message starts with a known command (handles "/laporan@botname" too)
+    first_token = text.split()[0] if text.split() else ""
+    if first_token.split("@")[0].lower() in GROUP_COMMANDS:
+        return True
+
+    # d. Sender is the fasilitator
+    if message.from_user and message.from_user.id == settings.fasilitator_telegram_id:
+        return True
+
+    return False
+
+
+# ------------------------------------------------------------------------- #
+# Part B — clean message text                                                #
+# ------------------------------------------------------------------------- #
+
+def extract_clean_message(text: str, bot_username: str) -> str:
+    """Strip the bot @mention from message text and normalise whitespace.
+
+    "@botname laporan 18 kg menteng" -> "laporan 18 kg menteng"
+    """
+    cleaned = re.sub(re.escape(f"@{bot_username}"), " ", text, flags=re.IGNORECASE)
+    return " ".join(cleaned.split())
+
+
+# ------------------------------------------------------------------------- #
+# Part C — reply behaviour (DM vs group)                                     #
+# ------------------------------------------------------------------------- #
+
+async def send_response(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, response: str
+) -> None:
+    """Send a reply, threading it in groups and chunking long messages.
+
+    DMs get a plain message; in groups the bot always replies to the
+    triggering message so members can see the context. Responses longer
+    than Telegram's 4096-char limit are split into multiple messages.
+    HTML parse mode: <b>bold</b>, <i>italic</i>, <code>code</code>.
+    """
+    if not response:
+        return
+
+    chat = update.effective_chat
+    message = update.message or update.edited_message
+    is_group = chat.type in GROUP_CHAT_TYPES
+
+    chunks = [
+        response[i : i + TELEGRAM_MAX_LEN]
+        for i in range(0, len(response), TELEGRAM_MAX_LEN)
+    ]
+    for chunk in chunks:
+        kwargs: dict = {
+            "chat_id": chat.id,
+            "text": chunk,
+            "parse_mode": ParseMode.HTML,
         }
+        if is_group and message:
+            kwargs["reply_to_message_id"] = message.message_id
+        await context.bot.send_message(**kwargs)
 
-    async def send(self, recipient_id: str, message: str, **kwargs: Any) -> bool:
-        """Send a text message to a Telegram chat."""
-        try:
-            await self._bot.send_message(
-                chat_id=recipient_id,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN,
-                **kwargs,
-            )
-            return True
-        except Exception as exc:
-            logger.error("Failed to send Telegram message to %s: %s", recipient_id, exc)
-            return False
 
-    async def send_photo(self, recipient_id: str, photo_url: str, caption: str = "") -> bool:
-        """Send a photo with optional caption to a Telegram chat."""
-        try:
-            await self._bot.send_photo(
-                chat_id=recipient_id,
-                photo=photo_url,
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return True
-        except Exception as exc:
-            logger.error("Failed to send Telegram photo to %s: %s", recipient_id, exc)
-            return False
+# ------------------------------------------------------------------------- #
+# Part D — context building (DM vs group)                                    #
+# ------------------------------------------------------------------------- #
 
-    async def set_webhook(self) -> bool:
-        """Register the webhook URL with Telegram."""
-        try:
-            await self._bot.set_webhook(url=settings.webhook_url)
-            logger.info("Webhook set to %s", settings.webhook_url)
-            return True
-        except Exception as exc:
-            logger.error("Failed to set webhook: %s", exc)
-            return False
+def build_context(update: Update) -> dict:
+    """Build the agent context dict from an update.
 
-    # ------------------------------------------------------------------ #
-    # Internal handlers (used by Application, not the agent pipeline)     #
-    # ------------------------------------------------------------------ #
+    Always uses update.effective_user.id (the sender) for volunteer lookups
+    — never the group chat id.
+    """
+    message = update.message or update.edited_message
+    is_group = update.effective_chat.type in GROUP_CHAT_TYPES
 
-    async def _handle_start(self, update: Update, _context: Any) -> None:
-        await update.message.reply_text(
-            "Welcome to *Macca* — your volunteer coordination assistant! "
-            "Send me a message and I'll connect you with the right resource.",
-            parse_mode=ParseMode.MARKDOWN,
+    ctx = {
+        "telegram_id": update.effective_user.id,
+        "username": update.effective_user.username,
+        "chat_type": "group" if is_group else "private",
+        "chat_id": update.effective_chat.id,
+        "message_id": message.message_id if message else None,
+        "photo_url": None,
+    }
+    if is_group:
+        ctx["group_title"] = update.effective_chat.title
+    return ctx
+
+
+# ------------------------------------------------------------------------- #
+# Part H — fasilitator alerts                                                #
+# ------------------------------------------------------------------------- #
+
+_SEVERITY_EMOJI = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}
+
+
+async def send_fasilitator_alert(bot, message: str, severity: str = "info") -> None:
+    """DM an alert to the fasilitator (never posted in a group)."""
+    prefix = _SEVERITY_EMOJI.get(severity, _SEVERITY_EMOJI["info"])
+    try:
+        await bot.send_message(
+            chat_id=settings.fasilitator_telegram_id,
+            text=f"{prefix} {message}",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.error("Failed to send fasilitator alert: %s", exc)
+
+
+# ------------------------------------------------------------------------- #
+# Database helpers                                                           #
+# ------------------------------------------------------------------------- #
+
+def _get_volunteer(telegram_id: int) -> dict | None:
+    result = (
+        db.table("volunteers").select("*").eq("telegram_id", telegram_id).limit(1).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def _get_active_mission(volunteer_id: str) -> dict | None:
+    result = (
+        db.table("volunteer_missions")
+        .select("quota_kg, assigned_area, missions(*)")
+        .eq("volunteer_id", volunteer_id)
+        .execute()
+    )
+    for row in result.data or []:
+        mission = row.get("missions")
+        if mission and mission.get("status") == "active":
+            mission["quota_kg"] = row.get("quota_kg")
+            mission["assigned_area"] = row.get("assigned_area")
+            return mission
+    return None
+
+
+def _save_chat(telegram_id: int, role: str, content: str, agent_module: str) -> None:
+    try:
+        db.table("chat_history").insert(
+            {
+                "telegram_id": telegram_id,
+                "role": role,
+                "content": content,
+                "agent_module": agent_module,
+            }
+        ).execute()
+    except Exception as exc:
+        logger.error("Failed to save chat history: %s", exc)
+
+
+def _total_collected_kg(volunteer_id: str) -> float:
+    result = (
+        db.table("reports").select("kg_collected").eq("volunteer_id", volunteer_id).execute()
+    )
+    return sum(float(r["kg_collected"]) for r in result.data or [])
+
+
+# ------------------------------------------------------------------------- #
+# Part F — registration flow (DM only)                                       #
+# ------------------------------------------------------------------------- #
+
+async def _registration_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, clean_text: str
+) -> None:
+    """Two-step DM registration: ask for the name, then create the volunteer."""
+    telegram_id = update.effective_user.id
+    pending = pending_registrations.get(telegram_id)
+
+    if not pending or pending.get("step") != "waiting_name":
+        pending_registrations[telegram_id] = {"step": "waiting_name"}
+        await send_response(update, context, WELCOME_ASK_NAME)
+        return
+
+    name = clean_text.strip()
+    pending_registrations[telegram_id] = {"step": "done", "name": name}
+
+    # Schema requires a non-null area; the fasilitator assigns the real one later
+    db.table("volunteers").insert(
+        {"telegram_id": telegram_id, "name": name, "area": "pending_assignment"}
+    ).execute()
+
+    await send_response(
+        update,
+        context,
+        f"Terima kasih {name}! Pendaftaran berhasil 🎉\n"
+        f"Fasilitator akan segera mengassign area dan misimu.",
+    )
+    await send_fasilitator_alert(
+        context.bot,
+        f"👤 Volunteer baru: {name} (ID: {telegram_id}) — belum diassign area.",
+    )
+
+
+# ------------------------------------------------------------------------- #
+# Part E — full message handler flow                                         #
+# ------------------------------------------------------------------------- #
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Main pipeline: gate → context → photo → volunteer → router → reply → history."""
+    bot_username = context.bot.username
+
+    if not determine_should_process(update, bot_username):
+        return
+
+    ctx = build_context(update)
+    message = update.message or update.edited_message
+    text = message.text or message.caption or ""
+    clean_text = extract_clean_message(text, bot_username)
+
+    if message.photo:
+        photo_file = await message.photo[-1].get_file()
+        data = bytes(await photo_file.download_as_bytearray())
+        ctx["photo_url"] = _image_handler.upload_from_bytes(
+            data, mission_id="laporan", volunteer_id=str(ctx["telegram_id"])
+        )
+        clean_text = (
+            extract_clean_message(message.caption, bot_username)
+            if message.caption
+            else "laporan foto"
         )
 
-    async def _handle_help(self, update: Update, _context: Any) -> None:
-        help_text = (
-            "*Macca Bot Commands*\n"
-            "/start — Welcome message\n"
-            "/help — Show this help\n\n"
-            "Just type your question or update and I'll route it to the right agent."
+    if not clean_text:
+        return
+
+    await _process_text(update, context, ctx, clean_text)
+
+
+async def _process_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, ctx: dict, clean_text: str
+) -> None:
+    """Steps 6-15: typing indicator, volunteer lookup, routing, reply, history."""
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    )
+
+    volunteer = _get_volunteer(ctx["telegram_id"])
+    if volunteer is None:
+        if ctx["chat_type"] == "private":
+            await _registration_step(update, context, clean_text)
+        else:
+            await send_response(update, context, NOT_REGISTERED_GROUP_MSG)
+        return
+
+    ctx["volunteer"] = volunteer
+    ctx["mission"] = _get_active_mission(volunteer["id"])
+
+    router = init_agents()
+    response = await router.route(clean_text, ctx)
+    await send_response(update, context, response)
+
+    _save_chat(ctx["telegram_id"], "user", clean_text, router.last_agent)
+    _save_chat(ctx["telegram_id"], "assistant", response, router.last_agent)
+
+
+# ------------------------------------------------------------------------- #
+# Part G — commands                                                          #
+# ------------------------------------------------------------------------- #
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Registration check for new users, welcome back for existing ones."""
+    volunteer = _get_volunteer(update.effective_user.id)
+    if volunteer:
+        await send_response(
+            update,
+            context,
+            f"Selamat datang kembali, <b>{volunteer['name']}</b>! 🌱\n"
+            f"Ketik /status untuk lihat progress, atau /help untuk bantuan.",
         )
-        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    elif update.effective_chat.type == "private":
+        await _registration_step(update, context, "/start")
+    else:
+        await send_response(update, context, NOT_REGISTERED_GROUP_MSG)
 
-    async def _handle_message(self, update: Update, _context: Any) -> None:
-        """Placeholder — real routing happens via the webhook endpoint."""
-        logger.debug("Message received from %s", update.message.from_user.id)
 
-    async def _handle_photo(self, update: Update, _context: Any) -> None:
-        """Placeholder — photo handling routed via the webhook endpoint."""
-        logger.debug("Photo received from %s", update.message.from_user.id)
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List bot capabilities; works in both DM and group."""
+    await send_response(update, context, HELP_MESSAGE)
+
+
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the volunteer's current mission progress from the database."""
+    volunteer = _get_volunteer(update.effective_user.id)
+    if volunteer is None:
+        msg = (
+            NOT_REGISTERED_GROUP_MSG
+            if update.effective_chat.type in GROUP_CHAT_TYPES
+            else WELCOME_ASK_NAME
+        )
+        await send_response(update, context, msg)
+        return
+
+    total = _total_collected_kg(volunteer["id"])
+    quota = float(volunteer.get("quota_kg") or 0)
+    mission = _get_active_mission(volunteer["id"])
+
+    lines = [
+        f"<b>Status {volunteer['name']}</b>",
+        f"Area: {volunteer.get('area', '-')}",
+        f"Terkumpul: <b>{total:g} kg</b> dari target {quota:g} kg",
+    ]
+    if mission:
+        lines.append(f"Misi aktif: {mission.get('title')} (deadline {mission.get('deadline')})")
+    else:
+        lines.append("Belum ada misi aktif yang diassign.")
+
+    await send_response(update, context, "\n".join(lines))
+
+
+async def handle_laporan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Format hint — or process directly when the report is inline with the command."""
+    args = " ".join(context.args or [])
+    if args:
+        # "/laporan 18 kg menteng" — treat as an actual report
+        await _process_text(update, context, build_context(update), f"laporan {args}")
+        return
+
+    await send_response(
+        update,
+        context,
+        "Kirim laporan dengan format: <code>laporan [berat] kg [lokasi]</code>\n"
+        "Contoh: <code>laporan 18 kg menteng</code>\n"
+        "Boleh juga lampirkan foto sebagai bukti! 📸",
+    )
+
+
+# ------------------------------------------------------------------------- #
+# Application factory                                                        #
+# ------------------------------------------------------------------------- #
+
+def create_application() -> Application:
+    """Build the python-telegram-bot Application with all handlers registered."""
+    application = (
+        Application.builder().token(settings.telegram_bot_token).updater(None).build()
+    )
+    application.add_handler(CommandHandler("start", handle_start))
+    application.add_handler(CommandHandler("help", handle_help))
+    application.add_handler(CommandHandler("status", handle_status))
+    application.add_handler(CommandHandler("laporan", handle_laporan))
+    application.add_handler(
+        MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message)
+    )
+    return application

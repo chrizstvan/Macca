@@ -1,49 +1,33 @@
-"""Content creator agent that generates social media posts, reports, and campaign material."""
+"""Content creator agent that drafts social posts, reports, and campaign material."""
 
-from typing import Any
+from .base_agent import BaseAgent, COMPLEX_MODEL
 
-from .base_agent import BaseAgent
-
-
-CONTENT_TYPES = ("social_post", "impact_report", "volunteer_story", "campaign_update", "newsletter")
+SYSTEM_PROMPT = (
+    "You are the Content Creator for Macca, a volunteer coordination platform for waste "
+    "collection missions. Write compelling, authentic content highlighting volunteer "
+    "impact and mission outcomes. "
+    "Social posts should be punchy and shareable; impact reports data-focused and "
+    "professional; volunteer stories personal and inspiring. "
+    "Avoid jargon. Include a clear call-to-action where appropriate."
+)
 
 
 class ContentCreatorAgent(BaseAgent):
-    """Generates campaign and communication content for Macca missions.
+    """Drafts campaign and communication content on request."""
 
-    Accepts a content brief via message and an optional content_type in context.
-    Returns polished, platform-appropriate copy ready for review or publishing.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are the Content Creator for Macca, a volunteer coordination platform. "
-            "Write compelling, authentic content that highlights volunteer impact and mission outcomes. "
-            "Adapt tone and length to the content type requested: "
-            "social posts should be punchy and shareable, "
-            "impact reports should be data-focused and professional, "
-            "volunteer stories should be personal and inspiring. "
-            "Avoid jargon. Always include a clear call-to-action where appropriate."
+    def __init__(self) -> None:
+        super().__init__(
+            name="content_creator",
+            description="Drafts social posts, stories, and campaign content",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Generate content based on the provided brief."""
-        ctx = context or {}
-        content_type = ctx.get("content_type", "social_post")
-        if content_type not in CONTENT_TYPES:
-            content_type = "social_post"
+    async def process(self, message: str, context: dict) -> str:
+        """Generate content from the brief, using the stronger model for quality."""
+        telegram_id = context.get("telegram_id")
 
-        extra = (
-            f"Content type: {content_type}. "
-            f"Mission: {ctx.get('mission_name', 'general')}. "
-            f"Target platform: {ctx.get('platform', 'Telegram/social media')}."
+        history = await self.get_chat_history(telegram_id) if telegram_id else []
+        messages = history + [{"role": "user", "content": message}]
+
+        return await self.call_claude(
+            SYSTEM_PROMPT, messages, model=COMPLEX_MODEL, max_tokens=2000
         )
-
-        content = self._call_claude(message, extra_system=extra)
-        return {
-            "agent": "content_creator",
-            "content": content,
-            "content_type": content_type,
-            "mission_id": ctx.get("mission_id"),
-        }

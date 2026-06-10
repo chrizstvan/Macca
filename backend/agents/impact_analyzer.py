@@ -1,45 +1,41 @@
 """Impact analyzer agent that quantifies and narrates mission outcomes."""
 
-from typing import Any
+from .base_agent import BaseAgent, COMPLEX_MODEL
+from backend.database.supabase_client import db
 
-from .base_agent import BaseAgent
-from backend.utils.impact_calculator import calculate_impact_score
+SYSTEM_PROMPT = (
+    "You are the Impact Analyst for Macca, a volunteer coordination platform for waste "
+    "collection missions. Analyse the collection data provided and produce clear, "
+    "evidence-based impact assessments: total kg collected, top areas, volunteer "
+    "participation, and trends. Quantify wherever possible and add a short narrative. "
+    "Tone: professional and data-driven, but accessible. Format for Telegram."
+)
 
 
 class ImpactAnalyzerAgent(BaseAgent):
-    """Analyses mission data to produce quantified impact assessments.
+    """Aggregates report data and produces quantified impact summaries."""
 
-    Combines raw metrics from context with Claude's narrative reasoning to
-    generate reports suitable for donors, stakeholders, and internal review.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are the Impact Analyst for Macca, a volunteer coordination platform. "
-            "Analyse mission data and produce clear, evidence-based impact assessments. "
-            "Quantify outcomes where possible (people helped, hours volunteered, resources distributed). "
-            "Provide a narrative summary, key metrics, and recommendations for improving future missions. "
-            "Tone: professional and data-driven, but human and accessible."
+    def __init__(self) -> None:
+        super().__init__(
+            name="impact_analyzer",
+            description="Quantifies and narrates mission impact from report data",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Produce an impact analysis for a completed or in-progress mission."""
-        ctx = context or {}
-        metrics = ctx.get("metrics", {})
-        impact_score = calculate_impact_score(metrics)
-
-        extra = (
-            f"Mission ID: {ctx.get('mission_id', 'unknown')}. "
-            f"Raw metrics: {metrics}. "
-            f"Calculated impact score: {impact_score}."
+    async def process(self, message: str, context: dict) -> str:
+        """Produce an impact analysis from verified collection reports."""
+        reports = (
+            db.table("reports")
+            .select("kg_collected, location, reported_at, verified")
+            .order("reported_at", desc=True)
+            .limit(100)
+            .execute()
+            .data
+            or []
         )
+        total = sum(float(r["kg_collected"]) for r in reports)
+        extra = f"\n\nReport data ({len(reports)} reports, {total} kg total): {reports}"
 
-        analysis = self._call_claude(message, extra_system=extra)
-        return {
-            "agent": "impact_analyzer",
-            "analysis": analysis,
-            "impact_score": impact_score,
-            "metrics": metrics,
-            "mission_id": ctx.get("mission_id"),
-        }
+        messages = [{"role": "user", "content": message}]
+        return await self.call_claude(
+            SYSTEM_PROMPT + extra, messages, model=COMPLEX_MODEL, max_tokens=2000
+        )

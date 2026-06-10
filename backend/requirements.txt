@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-python-telegram-bot==20.7
+# v21+ required: PTB 20.7 pins httpx~=0.25, which conflicts with supabase/gotrue (needs httpx>=0.26)
+python-telegram-bot>=21.0,<22
 anthropic
 supabase
 cloudinary

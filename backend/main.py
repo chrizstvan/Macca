@@ -1,126 +1,98 @@
-"""Macca FastAPI application entry point."""
+"""Macca FastAPI application: Telegram webhook entry point."""
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from telegram import Update
 
-from backend.agents import (
-    ContentCreatorAgent,
-    FasilitatorHubAgent,
-    ImpactAnalyzerAgent,
-    MissionBriefingAgent,
-    ProgressTrackerAgent,
-    RouterAgent,
-    VolunteerSupportAgent,
-)
-from backend.channels.telegram_handler import TelegramHandler
+from backend.channels.telegram_handler import create_application, init_agents
 from backend.config import settings
-from backend.utils.scheduler import MaccaScheduler
+from backend.database.supabase_client import db, test_connection
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------ #
-# Agent registry                                                       #
-# ------------------------------------------------------------------ #
-
-_AGENTS: dict[str, Any] = {
-    "mission_briefing": MissionBriefingAgent(),
-    "progress_tracker": ProgressTrackerAgent(),
-    "volunteer_support": VolunteerSupportAgent(),
-    "content_creator": ContentCreatorAgent(),
-    "impact_analyzer": ImpactAnalyzerAgent(),
-    "fasilitator_hub": FasilitatorHubAgent(),
-}
-
-_router = RouterAgent()
-_telegram = TelegramHandler()
-_scheduler = MaccaScheduler()
+application = create_application()
+bot_state = {"username": ""}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _telegram.set_webhook()
-    _scheduler.start()
-    logger.info("Macca backend started")
+    # 1. Initialize all agent instances
+    init_agents()
+
+    # 2. Verify Supabase connection
+    if not await test_connection():
+        logger.warning("Supabase connection check failed — continuing anyway")
+
+    # 3-4. Start the bot, set the webhook, and cache the bot username
+    await application.initialize()
+    await application.start()
+
+    webhook_url = f"{settings.webhook_url.rstrip('/')}/webhook"
+    await application.bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=["message", "edited_message"],
+    )
+    me = await application.bot.get_me()
+    bot_state["username"] = me.username or ""
+
+    # 5. Announce
+    logger.info("Bot @%s is live. Webhook set to %s", bot_state["username"], webhook_url)
+
     yield
-    _scheduler.shutdown()
+
+    await application.stop()
+    await application.shutdown()
     logger.info("Macca backend stopped")
 
 
 app = FastAPI(title="Macca", version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ------------------------------------------------------------------ #
-# Routes                                                               #
-# ------------------------------------------------------------------ #
+
+@app.post("/webhook")
+async def webhook(request: Request) -> dict:
+    """Receive a Telegram Update JSON payload and dispatch it to the bot handlers."""
+    payload = await request.json()
+    update = Update.de_json(payload, application.bot)
+    if update:
+        await application.process_update(update)
+    return {"ok": True}
+
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.1.0"}
-
-
-@app.post("/webhook/telegram")
-async def telegram_webhook(request: Request) -> JSONResponse:
-    """Receive Telegram updates, route through the agent pipeline, and reply."""
-    payload = await request.json()
-
-    normalised = await _telegram.receive(payload)
-    if not normalised or not normalised.get("message"):
-        return JSONResponse(content={"ok": True})
-
-    user_message = normalised["message"]
-    chat_id = normalised["chat_id"]
-    context = {
-        "volunteer_id": normalised.get("user_id"),
-        "username": normalised.get("username"),
+async def health() -> dict:
+    return {
+        "status": "ok",
+        "agents": "all_running",
+        "bot_username": bot_state["username"],
     }
 
-    # Route to the appropriate agent
-    route = await _router.handle(user_message, context)
-    intent: str = route["intent"]
-    agent = _AGENTS.get(intent, _AGENTS["volunteer_support"])
 
-    result = await agent.handle(user_message, context)
-
-    # Extract the reply text (agents use different keys)
-    reply = result.get("response") or result.get("briefing") or result.get("analysis") or result.get("content") or ""
-    if not reply:
-        reply = "I received your message and am processing it. A fasilitator will follow up shortly."
-
-    await _telegram.send(chat_id, reply)
-
-    # Forward escalations to the fasilitator
-    if result.get("needs_escalation") or result.get("needs_human_followup"):
-        escalation_msg = (
-            f"*Escalation from @{normalised.get('username', 'unknown')}*\n"
-            f"Message: {user_message}\n"
-            f"Agent response: {reply}"
-        )
-        await _telegram.send(str(settings.fasilitator_telegram_id), escalation_msg)
-
-    return JSONResponse(content={"ok": True, "intent": intent})
-
-
-@app.post("/api/missions/{mission_id}/impact")
-async def generate_impact_report(mission_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    """Trigger an impact analysis for a specific mission."""
-    agent = _AGENTS["impact_analyzer"]
-    result = await agent.handle(
-        f"Generate an impact report for mission {mission_id}.",
-        context={"mission_id": mission_id, "metrics": body.get("metrics", {})},
+@app.get("/dashboard/stats")
+async def dashboard_stats() -> dict:
+    """Aggregate stats for the dashboard."""
+    volunteers = db.table("volunteers").select("id", count="exact").execute()
+    active_missions = (
+        db.table("missions").select("id", count="exact").eq("status", "active").execute()
     )
-    return result
+    reports = db.table("reports").select("kg_collected, is_flagged, verified").execute()
+    rows = reports.data or []
 
-
-@app.post("/api/content/create")
-async def create_content(body: dict[str, Any]) -> dict[str, Any]:
-    """Generate content given a brief and optional content type."""
-    brief = body.get("brief", "")
-    if not brief:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="'brief' is required")
-    agent = _AGENTS["content_creator"]
-    return await agent.handle(brief, context=body.get("context", {}))
+    return {
+        "total_volunteers": volunteers.count or 0,
+        "active_missions": active_missions.count or 0,
+        "total_reports": len(rows),
+        "total_kg_collected": round(sum(float(r["kg_collected"]) for r in rows), 2),
+        "flagged_reports": sum(1 for r in rows if r.get("is_flagged")),
+        "verified_reports": sum(1 for r in rows if r.get("verified")),
+    }

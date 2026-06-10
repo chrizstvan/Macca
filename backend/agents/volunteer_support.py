@@ -1,40 +1,41 @@
 """Volunteer support agent that answers questions and provides guidance."""
 
-from typing import Any
-
 from .base_agent import BaseAgent
+
+SYSTEM_PROMPT = (
+    "You are a friendly volunteer support assistant for Macca, a volunteer coordination "
+    "platform for waste collection missions. Help volunteers with questions about their "
+    "missions, quotas, areas, reporting, and general guidance. "
+    "Be warm, clear, and concise. If a question requires human intervention, say so "
+    "explicitly and indicate that a fasilitator will follow up. Format for Telegram."
+)
 
 
 class VolunteerSupportAgent(BaseAgent):
-    """General-purpose support agent for volunteers.
+    """General-purpose support agent: FAQs, onboarding, and logistics questions."""
 
-    Handles FAQs, onboarding questions, logistical queries, and anything
-    that doesn't fit a more specialised agent. Falls back gracefully and
-    can escalate to a human fasilitator when needed.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are a friendly volunteer support assistant for Macca, a volunteer coordination platform. "
-            "Help volunteers with questions about their missions, the platform, logistics, and general guidance. "
-            "Be warm, clear, and concise. If a question requires human intervention, say so explicitly "
-            "and indicate that a fasilitator will follow up. Format responses for Telegram."
+    def __init__(self) -> None:
+        super().__init__(
+            name="volunteer_support",
+            description="Answers volunteer FAQs and general questions",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Respond to a volunteer support query."""
-        ctx = context or {}
-        extra = f"Volunteer ID: {ctx.get('volunteer_id', 'unknown')}." if ctx else ""
+    async def process(self, message: str, context: dict) -> str:
+        """Reply to a support query using recent chat history and the volunteer profile."""
+        telegram_id = context.get("telegram_id")
 
-        response = self._call_claude(message, extra_system=extra)
-        needs_human = any(
-            kw in response.lower()
-            for kw in ("fasilitator will follow up", "human intervention", "escalate")
-        )
-        return {
-            "agent": "volunteer_support",
-            "response": response,
-            "needs_human_followup": needs_human,
-            "volunteer_id": ctx.get("volunteer_id"),
-        }
+        extra = ""
+        if telegram_id:
+            volunteer = await self.get_volunteer(telegram_id)
+            if volunteer:
+                extra = (
+                    f"\n\nVolunteer profile: name={volunteer.get('name')}, "
+                    f"area={volunteer.get('area')}, quota={volunteer.get('quota_kg')} kg."
+                )
+            else:
+                extra = "\n\nThis user is not yet registered as a volunteer."
+
+        history = await self.get_chat_history(telegram_id) if telegram_id else []
+        messages = history + [{"role": "user", "content": message}]
+
+        return await self.call_claude(SYSTEM_PROMPT + extra, messages)

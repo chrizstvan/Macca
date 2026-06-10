@@ -1,38 +1,43 @@
-"""Mission briefing agent that provides volunteers with task context and objectives."""
-
-from typing import Any
+"""Mission briefing agent that explains mission details and assignments."""
 
 from .base_agent import BaseAgent
+from backend.database.supabase_client import db
+
+SYSTEM_PROMPT = (
+    "You are the Mission Briefing officer for Macca, a volunteer coordination platform "
+    "for waste collection missions. Answer questions about mission objectives, deadlines, "
+    "assigned areas, and quotas using the mission data provided. "
+    "Be clear, motivating, and actionable. Format for Telegram (bold and emoji sparingly)."
+)
 
 
 class MissionBriefingAgent(BaseAgent):
-    """Generates clear mission briefings for volunteers.
+    """Briefs volunteers on active missions, deadlines, areas, and quotas."""
 
-    Takes a mission description and optional metadata (location, deadline,
-    required skills) from context and produces a structured briefing message
-    ready to be sent to a volunteer via Telegram.
-    """
-
-    @property
-    def system_prompt(self) -> str:
-        return (
-            "You are the Mission Briefing officer for Macca, a volunteer coordination platform. "
-            "Your job is to craft clear, motivating, and actionable mission briefings for volunteers. "
-            "Always include: objective, location, timeline, required skills, and expected impact. "
-            "Keep the tone friendly, professional, and encouraging. "
-            "Format output as a structured message suitable for Telegram (use bold and emoji sparingly)."
+    def __init__(self) -> None:
+        super().__init__(
+            name="mission_briefing",
+            description="Explains mission details, deadlines, and assignments",
         )
 
-    async def handle(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Generate a mission briefing from the provided mission description."""
-        ctx = context or {}
-        extra = ""
-        if ctx:
-            extra = f"Additional context: {ctx}"
+    async def process(self, message: str, context: dict) -> str:
+        """Answer a mission question using active mission data from the database."""
+        telegram_id = context.get("telegram_id")
 
-        briefing = self._call_claude(message, extra_system=extra)
-        return {
-            "agent": "mission_briefing",
-            "briefing": briefing,
-            "mission_id": ctx.get("mission_id"),
-        }
+        missions = (
+            db.table("missions").select("*").eq("status", "active").execute().data or []
+        )
+        extra = f"\n\nActive missions: {missions}" if missions else "\n\nNo active missions."
+
+        if telegram_id:
+            volunteer = await self.get_volunteer(telegram_id)
+            if volunteer:
+                extra += (
+                    f"\nVolunteer: name={volunteer.get('name')}, "
+                    f"area={volunteer.get('area')}, quota={volunteer.get('quota_kg')} kg."
+                )
+
+        history = await self.get_chat_history(telegram_id) if telegram_id else []
+        messages = history + [{"role": "user", "content": message}]
+
+        return await self.call_claude(SYSTEM_PROMPT + extra, messages)
