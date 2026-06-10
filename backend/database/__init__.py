@@ -1,6 +1,22 @@
-"""Database layer: Supabase client and ORM-style model definitions."""
+"""Database layer: Supabase client and dataclass model definitions."""
 
-from .supabase_client import get_supabase_client
-from .models import Mission, Volunteer, ProgressUpdate, ImpactReport
+from .supabase_client import db, test_connection
+from .models import (
+    ChatHistory,
+    Mission,
+    Notification,
+    Report,
+    Volunteer,
+    VolunteerMission,
+)
 
-__all__ = ["get_supabase_client", "Mission", "Volunteer", "ProgressUpdate", "ImpactReport"]
+__all__ = [
+    "db",
+    "test_connection",
+    "Volunteer",
+    "Mission",
+    "VolunteerMission",
+    "Report",
+    "ChatHistory",
+    "Notification",
+]

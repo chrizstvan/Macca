@@ -7,7 +7,7 @@ from telegram import Bot, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from backend.config import config
+from backend.config import settings
 from .base_handler import BaseChannelHandler
 
 logger = logging.getLogger(__name__)
@@ -22,14 +22,14 @@ class TelegramHandler(BaseChannelHandler):
     """
 
     def __init__(self) -> None:
-        self._bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+        self._bot = Bot(token=settings.telegram_bot_token)
         self._app: Application | None = None
 
     def build_application(self) -> Application:
         """Build and configure the telegram Application with all handlers."""
         self._app = (
             Application.builder()
-            .token(config.TELEGRAM_BOT_TOKEN)
+            .token(settings.telegram_bot_token)
             .build()
         )
         self._app.add_handler(CommandHandler("start", self._handle_start))
@@ -88,8 +88,8 @@ class TelegramHandler(BaseChannelHandler):
     async def set_webhook(self) -> bool:
         """Register the webhook URL with Telegram."""
         try:
-            await self._bot.set_webhook(url=config.WEBHOOK_URL)
-            logger.info("Webhook set to %s", config.WEBHOOK_URL)
+            await self._bot.set_webhook(url=settings.webhook_url)
+            logger.info("Webhook set to %s", settings.webhook_url)
             return True
         except Exception as exc:
             logger.error("Failed to set webhook: %s", exc)

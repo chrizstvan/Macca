@@ -17,7 +17,7 @@ from backend.agents import (
     VolunteerSupportAgent,
 )
 from backend.channels.telegram_handler import TelegramHandler
-from backend.config import config
+from backend.config import settings
 from backend.utils.scheduler import MaccaScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -100,7 +100,7 @@ async def telegram_webhook(request: Request) -> JSONResponse:
             f"Message: {user_message}\n"
             f"Agent response: {reply}"
         )
-        await _telegram.send(config.FASILITATOR_TELEGRAM_ID, escalation_msg)
+        await _telegram.send(str(settings.fasilitator_telegram_id), escalation_msg)
 
     return JSONResponse(content={"ok": True, "intent": intent})
 

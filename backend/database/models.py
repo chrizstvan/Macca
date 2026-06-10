@@ -1,78 +1,85 @@
-"""Pydantic models representing Macca database entities."""
+"""Dataclass models mirroring the Supabase schema (see schema.sql)."""
 
+from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
-from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
 
+@dataclass
+class Volunteer:
+    """A registered volunteer assigned to a kelurahan area."""
 
-class MissionStatus(StrEnum):
-    DRAFT = "draft"
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-
-
-class VolunteerStatus(StrEnum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    SUSPENDED = "suspended"
-
-
-class Mission(BaseModel):
-    """Represents a volunteer mission in the database."""
-
+    telegram_id: int
+    name: str
+    area: str
     id: UUID | None = None
-    title: str
-    description: str
-    location: str
-    status: MissionStatus = MissionStatus.DRAFT
-    required_volunteers: int = 1
-    start_date: datetime | None = None
-    end_date: datetime | None = None
-    fasilitator_id: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class Volunteer(BaseModel):
-    """Represents a volunteer registered on the platform."""
-
-    id: UUID | None = None
-    telegram_id: str
-    username: str = ""
-    full_name: str = ""
-    status: VolunteerStatus = VolunteerStatus.ACTIVE
-    skills: list[str] = Field(default_factory=list)
-    missions_completed: int = 0
-    total_hours: float = 0.0
+    phone: str | None = None
+    team: list[str] = field(default_factory=list)
+    quota_kg: float = 20.0
     joined_at: datetime | None = None
+    is_active: bool = True
 
 
-class ProgressUpdate(BaseModel):
-    """A progress report submitted by a volunteer for a specific mission."""
+@dataclass
+class Mission:
+    """A collection mission with a deadline and lifecycle status."""
 
+    title: str
+    deadline: datetime
     id: UUID | None = None
-    mission_id: UUID
+    description: str | None = None
+    status: str = "active"  # active / completed / cancelled
+    created_at: datetime | None = None
+    created_by: str | None = None
+
+
+@dataclass
+class VolunteerMission:
+    """Junction record assigning a volunteer to a mission with a quota and area."""
+
     volunteer_id: UUID
-    message: str
-    completion_pct: int = Field(ge=0, le=100, default=0)
-    image_url: str | None = None
-    needs_escalation: bool = False
+    mission_id: UUID
+    quota_kg: float
+    assigned_area: str
+    id: UUID | None = None
+
+
+@dataclass
+class Report:
+    """A collection report submitted by a volunteer for a mission."""
+
+    volunteer_id: UUID
+    mission_id: UUID
+    kg_collected: float
+    location: str
+    id: UUID | None = None
+    photo_url: str | None = None
+    raw_message: str | None = None
+    is_flagged: bool = False
+    flag_reason: str | None = None
+    reported_at: datetime | None = None
+    verified: bool = False
+
+
+@dataclass
+class ChatHistory:
+    """A single message in a volunteer's conversation history."""
+
+    telegram_id: int
+    role: str  # user / assistant
+    content: str
+    id: UUID | None = None
+    agent_module: str | None = None
     created_at: datetime | None = None
 
 
-class ImpactReport(BaseModel):
-    """Aggregated impact data for a completed or in-progress mission."""
+@dataclass
+class Notification:
+    """An outbound notification queued for or sent to a Telegram user."""
 
+    telegram_id: int
+    type: str  # reminder / alert / broadcast
+    message: str
     id: UUID | None = None
-    mission_id: UUID
-    people_helped: int = 0
-    volunteer_hours: float = 0.0
-    resources_distributed: dict[str, Any] = Field(default_factory=dict)
-    impact_score: float = 0.0
-    narrative: str = ""
-    generated_at: datetime | None = None
+    sent_at: datetime | None = None
+    status: str = "pending"
