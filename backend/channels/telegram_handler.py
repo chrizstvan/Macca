@@ -260,20 +260,6 @@ def _get_active_mission(volunteer_id: str) -> dict | None:
     return None
 
 
-def _save_chat(telegram_id: int, role: str, content: str, agent_module: str) -> None:
-    try:
-        db.table("chat_history").insert(
-            {
-                "telegram_id": telegram_id,
-                "role": role,
-                "content": content,
-                "agent_module": agent_module,
-            }
-        ).execute()
-    except Exception as exc:
-        logger.error("Failed to save chat history: %s", exc)
-
-
 def _total_collected_kg(volunteer_id: str) -> float:
     result = (
         db.table("reports").select("kg_collected").eq("volunteer_id", volunteer_id).execute()
@@ -371,11 +357,9 @@ async def _process_text(
     ctx["mission"] = _get_active_mission(volunteer["id"])
 
     router = init_agents()
+    # Chat history is persisted inside each agent's process()
     response = await router.route(clean_text, ctx)
     await send_response(update, context, response)
-
-    _save_chat(ctx["telegram_id"], "user", clean_text, router.last_agent)
-    _save_chat(ctx["telegram_id"], "assistant", response, router.last_agent)
 
 
 # ------------------------------------------------------------------------- #

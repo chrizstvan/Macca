@@ -52,4 +52,8 @@ class ProgressTrackerAgent(BaseAgent):
         history = await self.get_chat_history(telegram_id) if telegram_id else []
         messages = history + [{"role": "user", "content": message}]
 
-        return await self.call_claude(SYSTEM_PROMPT + extra, messages)
+        reply = await self.call_claude(SYSTEM_PROMPT + extra, messages)
+        if telegram_id:
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+        return reply

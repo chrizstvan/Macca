@@ -50,4 +50,8 @@ class FasilitatorHubAgent(BaseAgent):
         history = await self.get_chat_history(telegram_id)
         messages = history + [{"role": "user", "content": message}]
 
-        return await self.call_claude(SYSTEM_PROMPT + extra, messages, max_tokens=2000)
+        reply = await self.call_claude(SYSTEM_PROMPT + extra, messages, max_tokens=2000)
+        if telegram_id:
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+        return reply

@@ -35,7 +35,7 @@ class Settings:
     fasilitator_telegram_id: int
 
     claude_model: str = "claude-sonnet-4-6"
-    max_tokens: int = 4096
+    max_tokens: int = 1000
 
     def __new__(cls) -> "Settings":
         if cls._instance is None:
