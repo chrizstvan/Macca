@@ -27,7 +27,7 @@ TEST_CASES = [
     ("capek nih", "volunteer_support"),
     ("target saya berapa kg?", "mission_briefing"),
     ("20 kilo plastik dari menteng", "progress_tracker"),
-    ("plastik pet itu apa?", "mission_briefing"),
+    ("plastik pet itu apa?", "plastic_education"),
 ]
 
 PASS = "✅ PASS"

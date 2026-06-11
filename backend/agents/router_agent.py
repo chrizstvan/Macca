@@ -21,6 +21,7 @@ VALID_INTENTS = (
     "mission_briefing",
     "progress_tracker",
     "volunteer_support",
+    "plastic_education",  # handled by the volunteer_support agent
     "content_creator",
     "impact_analyzer",
 )
@@ -28,15 +29,15 @@ VALID_INTENTS = (
 CLASSIFICATION_PROMPT = """Kamu adalah router untuk Macca, platform koordinasi volunteer pengumpulan sampah plastik di Jakarta. Klasifikasikan pesan volunteer ke dalam TEPAT SATU kategori berikut. Balas HANYA dengan string kategorinya, tanpa tanda baca atau penjelasan apa pun.
 
 Kategori:
-- mission_briefing: pertanyaan tentang tugas, area, kuota, deadline, SOP, cara pilah plastik, apa yang harus dilakukan
+- mission_briefing: pertanyaan tentang tugas, area, kuota, deadline, SOP laporan, apa yang harus dilakukan
 - progress_tracker: laporan plastik terkumpul (mengandung angka + kg/kilo + lokasi), pertanyaan tentang progress atau sisa target pribadi
 - volunteer_support: masalah, keluhan, mau berhenti, butuh motivasi, pertanyaan umum, kebingungan
+- plastic_education: pertanyaan tentang jenis plastik, kode plastik, daur ulang, dampak plastik ke lingkungan, mikroplastik, alternatif plastik, cara edukasi/menjelaskan ke warga
 - content_creator: minta dibuatkan konten media sosial, caption, post, teks pengumuman
 - impact_analyzer: pertanyaan tentang dampak total program, statistik keseluruhan, laporan untuk sponsor/donor
 
 Contoh:
 "apa tugas saya minggu ini?" → mission_briefing
-"gimana cara bedain plastik pet sama hdpe?" → mission_briefing
 "deadline misi kapan ya?" → mission_briefing
 "area saya di mana?" → mission_briefing
 "kuota saya berapa kg?" → mission_briefing
@@ -54,6 +55,16 @@ Contoh:
 "timbangan saya rusak, gimana dong?" → volunteer_support
 "halo, bot ini bisa apa aja?" → volunteer_support
 "minggu depan saya tidak bisa ikut, izin ya" → volunteer_support
+"plastik PET itu apa?" → plastic_education
+"bedanya plastik kode 1 sama kode 2 gimana?" → plastic_education
+"kenapa plastik bahaya untuk lingkungan?" → plastic_education
+"mikroplastik itu berbahaya ga?" → plastic_education
+"gimana cara daur ulang yang bener?" → plastic_education
+"alternatif plastik sekali pakai apa aja?" → plastic_education
+"gimana cara jelasin ke warga yang ga mau dengerin?" → plastic_education
+"styrofoam bisa didaur ulang ga?" → plastic_education
+"kresek kode berapa?" → plastic_education
+"indonesia buang plastik berapa banyak?" → plastic_education
 "buatkan caption instagram hari ini" → content_creator
 "tolong bikin post story wa tentang misi minggu ini" → content_creator
 "bikin teks pengumuman buat grup dong" → content_creator
@@ -72,14 +83,19 @@ class RouterAgent(BaseAgent):
             name="router",
             description="Classifies message intent and dispatches to specialist agents",
         )
-        self._agents = agents or {
-            "mission_briefing": MissionBriefingAgent(),
-            "progress_tracker": ProgressTrackerAgent(),
-            "volunteer_support": VolunteerSupportAgent(),
-            "content_creator": ContentCreatorAgent(),
-            "impact_analyzer": ImpactAnalyzerAgent(),
-            "fasilitator_hub": FasilitatorHubAgent(),
-        }
+        if agents is None:
+            volunteer_support = VolunteerSupportAgent()
+            agents = {
+                "mission_briefing": MissionBriefingAgent(),
+                "progress_tracker": ProgressTrackerAgent(),
+                "volunteer_support": volunteer_support,
+                # education questions are handled by the same support agent
+                "plastic_education": volunteer_support,
+                "content_creator": ContentCreatorAgent(),
+                "impact_analyzer": ImpactAnalyzerAgent(),
+                "fasilitator_hub": FasilitatorHubAgent(),
+            }
+        self._agents = agents
         self.last_agent: str = self.name
 
     async def process(self, message: str, context: dict) -> str:
