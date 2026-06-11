@@ -42,6 +42,7 @@ class VolunteerMission:
     quota_kg: float
     assigned_area: str
     id: UUID | None = None
+    reported_kg: float = 0.0
 
 
 @dataclass
@@ -55,6 +56,8 @@ class Report:
     id: UUID | None = None
     photo_url: str | None = None
     raw_message: str | None = None
+    source: str = "telegram"  # telegram / whatsapp / google_form
+    extra_data: dict = field(default_factory=dict)
     is_flagged: bool = False
     flag_reason: str | None = None
     reported_at: datetime | None = None

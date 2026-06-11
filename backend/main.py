@@ -7,15 +7,20 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Update
 
+from backend.agents import progress_tracker as progress_tracker_module
+from backend.agents.progress_tracker import ProgressTrackerAgent, cleanup_expired_pending
 from backend.channels.telegram_handler import create_application, init_agents
 from backend.config import settings
 from backend.database.supabase_client import db, test_connection
+from backend.utils.scheduler import MaccaScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 application = create_application()
 bot_state = {"username": ""}
+scheduler = MaccaScheduler()
+form_tracker = ProgressTrackerAgent()
 
 
 @asynccontextmanager
@@ -39,11 +44,18 @@ async def lifespan(app: FastAPI):
     me = await application.bot.get_me()
     bot_state["username"] = me.username or ""
 
-    # 5. Announce
+    # 5. Periodic jobs
+    scheduler.add_interval_job(
+        cleanup_expired_pending, minutes=5, job_id="cleanup_pending_reports"
+    )
+    scheduler.start()
+
+    # 6. Announce
     logger.info("Bot @%s is live. Webhook set to %s", bot_state["username"], webhook_url)
 
     yield
 
+    scheduler.shutdown(wait=False)
     await application.stop()
     await application.shutdown()
     logger.info("Macca backend stopped")
@@ -67,6 +79,37 @@ async def webhook(request: Request) -> dict:
     if update:
         await application.process_update(update)
     return {"ok": True}
+
+
+@app.post("/webhook/google-form")
+async def google_form_webhook(request: Request) -> dict:
+    """Receive a Google Form submission (relayed by Apps Script) and record the report."""
+    payload = await request.json()
+    phone = str(payload.get("phone") or "").strip()
+
+    result = db.table("volunteers").select("*").eq("phone", phone).limit(1).execute()
+    volunteer = result.data[0] if result.data else None
+    if volunteer is None:
+        await progress_tracker_module._alert_fasilitator(
+            f"⚠️ Google Form dari nomor tidak dikenal: {phone} — laporan tidak disimpan."
+        )
+        return {"status": "unknown_volunteer"}
+
+    # Accept both the simple relay keys and the original form field names
+    form_data = dict(payload)
+    if payload.get("kg") is not None:
+        form_data.setdefault("Kg", payload["kg"])
+    if payload.get("location"):
+        form_data.setdefault("Lokasi", payload["location"])
+
+    context = {
+        "source": "google_form",
+        "form_data": form_data,
+        "volunteer": volunteer,
+        "telegram_id": volunteer.get("telegram_id"),
+    }
+    confirmation = await form_tracker.process("", context)
+    return {"status": "ok", "confirmation": confirmation}
 
 
 @app.get("/health")

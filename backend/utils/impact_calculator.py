@@ -1,58 +1,91 @@
-"""Pure-function impact score calculator used by ImpactAnalyzerAgent."""
+"""Converts collected plastic weight into tangible environmental impact figures."""
 
-from typing import Any
-
-
-# Weights used to compute a 0–100 composite impact score
-_WEIGHTS: dict[str, float] = {
-    "people_helped": 0.40,
-    "volunteer_hours": 0.25,
-    "completion_pct": 0.20,
-    "resources_distributed_count": 0.15,
-}
-
-_MAX_VALUES: dict[str, float] = {
-    "people_helped": 500,
-    "volunteer_hours": 200,
-    "completion_pct": 100,
-    "resources_distributed_count": 100,
-}
+BOTTLES_PER_KG = 71  # avg 14 g per 600 ml bottle → ~71 bottles per kg
+CO2_KG_PER_KG = 3.0  # 1 kg plastic recycled prevents ~3 kg CO2
+WATER_LITERS_PER_KG = 2.0  # producing 1 kg virgin plastic uses ~2 L water
 
 
-def calculate_impact_score(metrics: dict[str, Any]) -> float:
-    """Compute a weighted impact score in the range [0, 100].
+class ImpactCalculator:
+    """Static conversions from kg of plastic to bottles, CO2, and water figures."""
 
-    Accepts a flat metrics dict with any subset of the known keys.
-    Unknown keys are ignored; missing keys default to 0.
-    """
-    if not metrics:
-        return 0.0
+    @staticmethod
+    def kg_to_bottles(kg: float) -> int:
+        return round(kg * BOTTLES_PER_KG)
 
-    # Normalise resources_distributed: accept count or a nested dict
-    resources = metrics.get("resources_distributed", {})
-    resources_count = (
-        len(resources) if isinstance(resources, dict) else int(resources)
-    )
+    @staticmethod
+    def kg_to_co2_prevented(kg: float) -> float:
+        return round(kg * CO2_KG_PER_KG, 2)
 
-    normalised = {
-        "people_helped": float(metrics.get("people_helped", 0)),
-        "volunteer_hours": float(metrics.get("volunteer_hours", 0)),
-        "completion_pct": float(metrics.get("completion_pct", 0)),
-        "resources_distributed_count": float(resources_count),
-    }
+    @staticmethod
+    def kg_to_liters_water_saved(kg: float) -> float:
+        return round(kg * WATER_LITERS_PER_KG, 2)
 
-    score = 0.0
-    for key, weight in _WEIGHTS.items():
-        max_val = _MAX_VALUES[key]
-        capped = min(normalised[key], max_val)
-        score += (capped / max_val) * weight * 100
+    @staticmethod
+    def format_impact_summary(kg: float) -> dict:
+        return {
+            "kg": kg,
+            "bottles": ImpactCalculator.kg_to_bottles(kg),
+            "co2_kg": ImpactCalculator.kg_to_co2_prevented(kg),
+            "water_liters": ImpactCalculator.kg_to_liters_water_saved(kg),
+        }
 
-    return round(score, 2)
+    @staticmethod
+    def format_impact_narrative(kg: float, lang: str = "id") -> str:
+        bottles = _fmt(ImpactCalculator.kg_to_bottles(kg), lang)
+        co2 = _fmt(ImpactCalculator.kg_to_co2_prevented(kg), lang)
+        water = _fmt(ImpactCalculator.kg_to_liters_water_saved(kg), lang)
+        if lang == "en":
+            return (
+                f"Equivalent to saving {bottles} plastic bottles, preventing "
+                f"{co2} kg of CO₂ emissions, and saving {water} liters of water"
+            )
+        return (
+            f"Setara menyelamatkan {bottles} botol plastik, mencegah "
+            f"{co2} kg emisi CO₂, dan menghemat {water} liter air"
+        )
 
 
-def format_impact_summary(metrics: dict[str, Any]) -> str:
-    """Return a one-line human-readable summary of key impact metrics."""
-    people = metrics.get("people_helped", 0)
-    hours = metrics.get("volunteer_hours", 0)
-    score = calculate_impact_score(metrics)
-    return f"{people} people helped · {hours:.1f} volunteer hours · impact score {score}/100"
+def _fmt(value: float, lang: str = "id") -> str:
+    """Format a number with locale separators ('7.100' / '12,5' for id)."""
+    if value == int(value):
+        text = f"{int(value):,}"
+    else:
+        text = f"{value:,.2f}".rstrip("0").rstrip(".")
+    if lang == "en":
+        return text
+    return text.translate(str.maketrans(",.", ".,"))
+
+
+if __name__ == "__main__":
+    calc = ImpactCalculator
+
+    assert calc.kg_to_bottles(1) == 71
+    assert calc.kg_to_bottles(100) == 7100
+    assert calc.kg_to_bottles(0) == 0
+    assert calc.kg_to_bottles(0.5) == 36  # rounds 35.5 → 36
+
+    assert calc.kg_to_co2_prevented(1) == 3.0
+    assert calc.kg_to_co2_prevented(100) == 300.0
+    assert calc.kg_to_co2_prevented(2.5) == 7.5
+
+    assert calc.kg_to_liters_water_saved(1) == 2.0
+    assert calc.kg_to_liters_water_saved(100) == 200.0
+    assert calc.kg_to_liters_water_saved(0.25) == 0.5
+
+    summary = calc.format_impact_summary(100)
+    assert summary == {"kg": 100, "bottles": 7100, "co2_kg": 300.0, "water_liters": 200.0}
+
+    narrative = calc.format_impact_narrative(100)
+    assert narrative == (
+        "Setara menyelamatkan 7.100 botol plastik, mencegah "
+        "300 kg emisi CO₂, dan menghemat 200 liter air"
+    ), narrative
+
+    narrative_en = calc.format_impact_narrative(100, lang="en")
+    assert "7,100 plastic bottles" in narrative_en, narrative_en
+
+    assert _fmt(12.5) == "12,5"
+    assert _fmt(1234567) == "1.234.567"
+    assert _fmt(12.5, "en") == "12.5"
+
+    print("✅ all ImpactCalculator tests passed")

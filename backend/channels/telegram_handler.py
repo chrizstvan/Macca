@@ -217,16 +217,12 @@ def build_context(update: Update) -> dict:
 # Part H — fasilitator alerts                                                #
 # ------------------------------------------------------------------------- #
 
-_SEVERITY_EMOJI = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}
-
-
-async def send_fasilitator_alert(bot, message: str, severity: str = "info") -> None:
-    """DM an alert to the fasilitator (never posted in a group)."""
-    prefix = _SEVERITY_EMOJI.get(severity, _SEVERITY_EMOJI["info"])
+async def send_fasilitator_alert(bot, alert_message: str) -> None:
+    """DM '🚨 ALERT: ...' to the fasilitator (e.g. for anomalous/flagged reports)."""
     try:
         await bot.send_message(
             chat_id=settings.fasilitator_telegram_id,
-            text=f"{prefix} {message}",
+            text=f"🚨 ALERT: {alert_message}",
             parse_mode=ParseMode.HTML,
         )
     except Exception as exc:
@@ -320,10 +316,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     clean_text = extract_clean_message(text, bot_username)
 
     if message.photo:
-        photo_file = await message.photo[-1].get_file()
-        data = bytes(await photo_file.download_as_bytearray())
-        ctx["photo_url"] = _image_handler.upload_from_bytes(
-            data, mission_id="laporan", volunteer_id=str(ctx["telegram_id"])
+        # Largest size; download + compress (max 1MB) + Cloudinary upload all
+        # happen inside upload_from_telegram
+        ctx["photo_url"] = await _image_handler.upload_from_telegram(
+            message.photo[-1].file_id, context.application
         )
         clean_text = (
             extract_clean_message(message.caption, bot_username)

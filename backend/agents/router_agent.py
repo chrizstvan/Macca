@@ -8,7 +8,7 @@ from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
 from .impact_analyzer import ImpactAnalyzerAgent
 from .mission_briefing import MissionBriefingAgent
-from .progress_tracker import ProgressTrackerAgent
+from .progress_tracker import ProgressTrackerAgent, has_pending_report
 from .volunteer_support import VolunteerSupportAgent
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,11 @@ class RouterAgent(BaseAgent):
         # 1. Fasilitator always goes to the fasilitator hub
         if context.get("telegram_id") == settings.fasilitator_telegram_id:
             return "fasilitator_hub"
+
+        # 1b. A volunteer mid-report (pending kg/location/confirmation) skips
+        #     classification — their reply belongs to the progress tracker
+        if has_pending_report(context.get("telegram_id")):
+            return "progress_tracker"
 
         # 2-3. Classify with Claude Haiku and normalise the label
         label = await self.call_claude(

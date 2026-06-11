@@ -5,6 +5,7 @@ python-telegram-bot>=21.0,<22
 anthropic
 supabase
 cloudinary
+Pillow
 apscheduler
 python-dotenv
 httpx

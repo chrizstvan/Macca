@@ -1,11 +1,15 @@
-"""Cloudinary-backed image upload and URL generation utilities."""
+"""Cloudinary uploads for volunteer report photos (with Telegram download support)."""
 
+import asyncio
 import logging
+import re
+from datetime import datetime, timezone
 from io import BytesIO
-from typing import Any
 
 import cloudinary
 import cloudinary.uploader
+from PIL import Image
+from telegram.ext import Application
 
 from backend.config import settings
 
@@ -18,63 +22,78 @@ cloudinary.config(
     secure=True,
 )
 
+MAX_IMAGE_BYTES = 1024 * 1024  # 1 MB
+FOLDER = "bebas-plastik/reports"
+
 
 class ImageHandler:
-    """Handles uploading volunteer progress photos to Cloudinary.
+    """Compresses and uploads report photos to Cloudinary."""
 
-    Images are stored under a per-mission folder and tagged for easy
-    retrieval when generating impact reports.
-    """
-
-    FOLDER_PREFIX = "macca"
-
-    def upload_from_bytes(
-        self,
-        data: bytes,
-        mission_id: str,
-        volunteer_id: str,
-        tags: list[str] | None = None,
+    async def upload_photo(
+        self, photo_bytes: bytes, volunteer_id: str, timestamp: str
     ) -> str | None:
-        """Upload raw image bytes to Cloudinary and return the secure URL."""
+        """Compress to <=1MB, upload to Cloudinary, and return the secure URL.
+
+        Returns None (and logs the error) if the upload fails.
+        """
+        public_id = _sanitize(f"{volunteer_id}_{timestamp}")
         try:
-            result = cloudinary.uploader.upload(
-                BytesIO(data),
-                folder=f"{self.FOLDER_PREFIX}/{mission_id}",
-                public_id=f"{volunteer_id}_{_timestamp()}",
-                tags=tags or ["macca", mission_id],
-                resource_type="image",
-            )
-            url: str = result.get("secure_url", "")
-            logger.info("Uploaded image for mission %s: %s", mission_id, url)
+            # Compression and the Cloudinary SDK are blocking — keep them off the event loop
+            result = await asyncio.to_thread(self._compress_and_upload, photo_bytes, public_id)
+            url: str = result["secure_url"]
+            logger.info("Uploaded report photo %s/%s: %s", FOLDER, public_id, url)
             return url
         except Exception as exc:
-            logger.error("Cloudinary upload failed: %s", exc)
+            logger.error("Cloudinary upload failed for %s: %s", public_id, exc)
             return None
 
-    def upload_from_url(self, url: str, mission_id: str, volunteer_id: str) -> str | None:
-        """Re-upload an image from an existing URL (e.g., Telegram CDN) to Cloudinary."""
+    async def upload_from_telegram(self, file_id: str, bot: Application) -> str | None:
+        """Download a photo from Telegram by file_id and upload it to Cloudinary."""
         try:
-            result = cloudinary.uploader.upload(
-                url,
-                folder=f"{self.FOLDER_PREFIX}/{mission_id}",
-                public_id=f"{volunteer_id}_{_timestamp()}",
-                tags=["macca", mission_id],
-            )
-            return result.get("secure_url")
+            tg_bot = bot.bot if isinstance(bot, Application) else bot
+            file = await tg_bot.get_file(file_id)
+            photo_bytes = bytes(await file.download_as_bytearray())
         except Exception as exc:
-            logger.error("Cloudinary re-upload from URL failed: %s", exc)
+            logger.error("Failed to download Telegram file %s: %s", file_id, exc)
             return None
 
-    def list_mission_images(self, mission_id: str) -> list[dict[str, Any]]:
-        """Return all images stored for a given mission."""
-        try:
-            result = cloudinary.api.resources_by_tag(mission_id, resource_type="image")
-            return result.get("resources", [])
-        except Exception as exc:
-            logger.error("Failed to list Cloudinary images for mission %s: %s", mission_id, exc)
-            return []
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        return await self.upload_photo(photo_bytes, file_id[:16], timestamp)
+
+    @staticmethod
+    def _compress_and_upload(photo_bytes: bytes, public_id: str) -> dict:
+        return cloudinary.uploader.upload(
+            BytesIO(_compress(photo_bytes)),
+            folder=FOLDER,
+            public_id=public_id,
+            resource_type="image",
+            quality="auto",
+        )
 
 
-def _timestamp() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+def _compress(photo_bytes: bytes) -> bytes:
+    """Re-encode as JPEG, lowering quality (then size) until under MAX_IMAGE_BYTES."""
+    if len(photo_bytes) <= MAX_IMAGE_BYTES:
+        return photo_bytes
+
+    image = Image.open(BytesIO(photo_bytes))
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    buffer = BytesIO()
+    for quality in (85, 70, 55, 40):
+        buffer = BytesIO()
+        image.save(buffer, "JPEG", quality=quality, optimize=True)
+        if buffer.tell() <= MAX_IMAGE_BYTES:
+            return buffer.getvalue()
+
+    while buffer.tell() > MAX_IMAGE_BYTES and min(image.size) > 200:
+        image = image.resize((image.width // 2, image.height // 2))
+        buffer = BytesIO()
+        image.save(buffer, "JPEG", quality=40, optimize=True)
+    return buffer.getvalue()
+
+
+def _sanitize(public_id: str) -> str:
+    """Strip characters Cloudinary rejects in public IDs (e.g. ':' from ISO timestamps)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", public_id)

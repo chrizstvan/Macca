@@ -32,7 +32,8 @@ create table if not exists volunteer_missions (
     volunteer_id  uuid references volunteers(id),
     mission_id    uuid references missions(id),
     quota_kg      numeric not null,
-    assigned_area text not null
+    assigned_area text not null,
+    reported_kg   numeric default 0
 );
 
 create table if not exists reports (
@@ -43,6 +44,8 @@ create table if not exists reports (
     location     text not null,
     photo_url    text,
     raw_message  text,
+    source       text default 'telegram' check (source in ('telegram', 'whatsapp', 'google_form')),
+    extra_data   jsonb default '{}',
     is_flagged   boolean default false,
     flag_reason  text,
     reported_at  timestamptz default now(),
@@ -76,3 +79,11 @@ create index if not exists idx_reports_volunteer_id on reports (volunteer_id);
 create index if not exists idx_reports_mission_id on reports (mission_id);
 create index if not exists idx_chat_history_telegram_id on chat_history (telegram_id);
 create index if not exists idx_chat_history_created_at on chat_history (created_at);
+
+-- ------------------------------------------------------------------ --
+-- Migration for existing databases (run once in the SQL editor)        --
+-- ------------------------------------------------------------------ --
+-- alter table reports add column source text default 'telegram'
+--     check (source in ('telegram', 'whatsapp', 'google_form'));
+-- alter table reports add column extra_data jsonb default '{}';
+-- alter table volunteer_missions add column reported_kg numeric default 0;
