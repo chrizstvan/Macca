@@ -3,6 +3,8 @@
 import logging
 
 from backend.config import settings
+# module-qualified so tests can monkeypatch scheduler.get_active_quiz etc.
+from backend.utils import scheduler
 from .base_agent import BaseAgent
 from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
@@ -109,6 +111,11 @@ class RouterAgent(BaseAgent):
         if has_pending_report(context.get("telegram_id")):
             return "progress_tracker"
 
+        # 1c. A bare A/B/C/D reply while a quiz is active is a quiz answer.
+        #     The pending-report check above wins, so report A/B replies are safe.
+        if message.strip().upper() in ("A", "B", "C", "D") and scheduler.get_active_quiz():
+            return "quiz_answer"
+
         # 2-3. Classify with Claude Haiku and normalise the label
         label = await self.call_claude(
             CLASSIFICATION_PROMPT,
@@ -129,6 +136,10 @@ class RouterAgent(BaseAgent):
     async def route(self, message: str, context: dict) -> str:
         """Classify, delegate to the matching agent, and return its response."""
         intent = await self.process(message, context)
+        if intent == "quiz_answer":
+            self.last_agent = "quiz_answer"
+            logger.info("Routing message to quiz answer handler")
+            return await scheduler.handle_quiz_answer(message, context)
         agent = self._agents[intent]
         self.last_agent = agent.name
         logger.info("Routing message to %s", agent.name)
