@@ -32,7 +32,22 @@ class Settings:
     cloudinary_api_key: str
     cloudinary_api_secret: str
     webhook_url: str
-    fasilitator_telegram_id: int
+    fasilitator_telegram_id: int = 0
+
+    # WhatsApp Cloud API
+    whatsapp_phone_number_id: str = ""
+    whatsapp_business_account_id: str = ""
+    whatsapp_access_token: str = ""
+    whatsapp_verify_token: str = ""
+
+    # Fasilitator identity (works for both Telegram and WhatsApp)
+    fasilitator_phone: str = ""
+
+    # Test mode
+    test_mode_enabled: bool = True
+
+    # Active channel — which is primary right now
+    active_channel: str = "telegram"
 
     claude_model: str = "claude-sonnet-4-6"
     max_tokens: int = 1000
@@ -57,14 +72,43 @@ class Settings:
         self.cloudinary_api_secret = self._require("CLOUDINARY_API_SECRET")
         self.webhook_url = self._require("WEBHOOK_URL")
 
-        raw_fasilitator_id = self._require("FASILITATOR_TELEGRAM_ID")
-        try:
-            self.fasilitator_telegram_id = int(raw_fasilitator_id)
-        except ValueError:
+        raw_fasilitator_id = os.getenv("FASILITATOR_TELEGRAM_ID", "").strip()
+        if raw_fasilitator_id:
+            try:
+                self.fasilitator_telegram_id = int(raw_fasilitator_id)
+            except ValueError:
+                raise SettingsError(
+                    f"FASILITATOR_TELEGRAM_ID must be an integer Telegram chat ID, "
+                    f"got: {raw_fasilitator_id!r}"
+                ) from None
+        else:
+            self.fasilitator_telegram_id = 0
+
+        # WhatsApp Cloud API (optional until channel enabled)
+        self.whatsapp_phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+        self.whatsapp_business_account_id = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
+        self.whatsapp_access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
+        self.whatsapp_verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+
+        # Fasilitator phone (WhatsApp identity)
+        self.fasilitator_phone = os.getenv("FASILITATOR_PHONE", "")
+
+        # Test mode toggle
+        self.test_mode_enabled = os.getenv("TEST_MODE_ENABLED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        # Active channel
+        active_channel = os.getenv("ACTIVE_CHANNEL", "telegram").lower().strip()
+        if active_channel not in {"telegram", "whatsapp", "both"}:
             raise SettingsError(
-                f"FASILITATOR_TELEGRAM_ID must be an integer Telegram chat ID, "
-                f"got: {raw_fasilitator_id!r}"
-            ) from None
+                f"ACTIVE_CHANNEL must be one of 'telegram', 'whatsapp', 'both', "
+                f"got: {active_channel!r}"
+            )
+        self.active_channel = active_channel
 
     @staticmethod
     def _require(name: str) -> str:

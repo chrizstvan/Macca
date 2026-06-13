@@ -3,13 +3,14 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Update
 
 from backend.agents import progress_tracker as progress_tracker_module
 from backend.agents.progress_tracker import ProgressTrackerAgent, cleanup_expired_pending
 from backend.channels.telegram_handler import create_application, init_agents
+from backend.channels.whatsapp_handler import WhatsAppHandler
 from backend.config import settings
 from backend.database.supabase_client import db, test_connection
 from backend.utils.scheduler import MaccaScheduler
@@ -21,12 +22,14 @@ application = create_application()
 bot_state = {"username": ""}
 scheduler = MaccaScheduler()
 form_tracker = ProgressTrackerAgent()
+whatsapp_handler = WhatsAppHandler()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Initialize all agent instances
-    init_agents()
+    router = init_agents()
+    whatsapp_handler.router = router
 
     # 2. Verify Supabase connection
     if not await test_connection():
@@ -110,6 +113,37 @@ async def google_form_webhook(request: Request) -> dict:
     }
     confirmation = await form_tracker.process("", context)
     return {"status": "ok", "confirmation": confirmation}
+
+
+@app.get("/webhook/whatsapp")
+async def whatsapp_verify(request: Request) -> Response:
+    """Meta webhook verification handshake.
+
+    Meta sends ?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...
+    We echo back the challenge as plain text iff the token matches.
+    """
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge", "")
+
+    if mode == "subscribe" and token == settings.whatsapp_verify_token:
+        logger.info("WhatsApp webhook verified")
+        return Response(content=challenge, media_type="text/plain")
+
+    logger.warning("WhatsApp verify rejected: mode=%r token_match=%s", mode, token == settings.whatsapp_verify_token)
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request) -> dict:
+    """Receive a WhatsApp Cloud API event and dispatch any inbound message."""
+    payload = await request.json()
+    try:
+        await whatsapp_handler.handle_incoming(payload)
+    except Exception as exc:
+        logger.exception("WhatsApp handle_incoming failed: %s", exc)
+    return {"ok": True}
 
 
 @app.get("/health")
