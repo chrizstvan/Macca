@@ -2,7 +2,6 @@
 
 import logging
 
-from backend.config import settings
 from .base_agent import BaseAgent
 from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
@@ -84,8 +83,13 @@ class RouterAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Classify the message and return the intent category string."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
+
         # 1. Fasilitator always goes to the fasilitator hub
-        if context.get("telegram_id") == settings.fasilitator_telegram_id:
+        if context["is_fasilitator"]:
             return "fasilitator_hub"
 
         # 1b. A volunteer mid-report (pending kg/location/confirmation) skips

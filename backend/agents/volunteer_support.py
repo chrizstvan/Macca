@@ -22,18 +22,19 @@ class VolunteerSupportAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Reply to a support query using recent chat history and the volunteer profile."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
-        extra = ""
-        if telegram_id:
-            volunteer = await self.get_volunteer(telegram_id)
-            if volunteer:
-                extra = (
-                    f"\n\nVolunteer profile: name={volunteer.get('name')}, "
-                    f"area={volunteer.get('area')}, quota={volunteer.get('quota_kg')} kg."
-                )
-            else:
-                extra = "\n\nThis user is not yet registered as a volunteer."
+        if volunteer:
+            extra = (
+                f"\n\nVolunteer profile: name={volunteer.get('name')}, "
+                f"area={volunteer.get('area')}, quota={volunteer.get('quota_kg')} kg."
+            )
+        else:
+            extra = "\n\nThis user is not yet registered as a volunteer."
 
         history = await self.get_chat_history(telegram_id) if telegram_id else []
         messages = history + [{"role": "user", "content": message}]

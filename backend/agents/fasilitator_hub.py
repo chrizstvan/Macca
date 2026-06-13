@@ -1,7 +1,6 @@
 """Fasilitator hub agent providing operational tools for mission facilitators."""
 
 from .base_agent import BaseAgent
-from backend.config import settings
 from backend.database.supabase_client import db
 
 SYSTEM_PROMPT = (
@@ -24,9 +23,13 @@ class FasilitatorHubAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Handle a fasilitator request; non-fasilitators are redirected politely."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
-        if telegram_id != settings.fasilitator_telegram_id:
+        if not context["is_fasilitator"]:
             return (
                 "This command is only available to the fasilitator. "
                 "If you need help, just ask me a question directly!"

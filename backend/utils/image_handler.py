@@ -8,10 +8,13 @@ from io import BytesIO
 
 import cloudinary
 import cloudinary.uploader
+import httpx
 from PIL import Image
 from telegram.ext import Application
 
 from backend.config import settings
+
+WHATSAPP_GRAPH_BASE = "https://graph.facebook.com/v18.0"
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,37 @@ class ImageHandler:
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         return await self.upload_photo(photo_bytes, file_id[:16], timestamp)
+
+    async def upload_from_whatsapp(
+        self, media_id: str, access_token: str, volunteer_id: str
+    ) -> str | None:
+        """Resolve a WhatsApp Cloud API media_id to bytes, then upload to Cloudinary.
+
+        Two-step download required by the Graph API: GET /{media_id} returns a
+        short-lived signed URL; that URL is then fetched with the same bearer
+        token to retrieve the actual bytes.
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                meta_resp = await client.get(
+                    f"{WHATSAPP_GRAPH_BASE}/{media_id}", headers=headers
+                )
+                meta_resp.raise_for_status()
+                media_url = meta_resp.json().get("url")
+                if not media_url:
+                    logger.error("WhatsApp media %s: missing 'url' in metadata", media_id)
+                    return None
+
+                bin_resp = await client.get(media_url, headers=headers)
+                bin_resp.raise_for_status()
+                photo_bytes = bin_resp.content
+        except httpx.HTTPError as exc:
+            logger.error("Failed to download WhatsApp media %s: %s", media_id, exc)
+            return None
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        return await self.upload_photo(photo_bytes, volunteer_id, timestamp)
 
     @staticmethod
     def _compress_and_upload(photo_bytes: bytes, public_id: str) -> dict:

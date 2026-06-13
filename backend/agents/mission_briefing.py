@@ -44,12 +44,15 @@ class MissionBriefingAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Answer a mission/SOP question with full volunteer + mission context."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
         # 2. Volunteer profile (already loaded by the router/handler)
-        volunteer = context.get("volunteer")
-        if volunteer is None and telegram_id:
-            volunteer = await self.get_volunteer(telegram_id)
+        if volunteer is None:
+            volunteer = context.get("volunteer")
         if volunteer is None:
             return (
                 "Kamu belum terdaftar sebagai volunteer. "

@@ -23,6 +23,10 @@ class ContentCreatorAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Generate content from the brief, using the stronger model for quality."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
         history = await self.get_chat_history(telegram_id) if telegram_id else []

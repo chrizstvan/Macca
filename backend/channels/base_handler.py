@@ -29,3 +29,11 @@ class BaseChannelHandler(ABC):
     @abstractmethod
     async def send_photo(self, recipient_id: str, photo_url: str, caption: str = "") -> bool:
         """Deliver a photo message to a recipient on this channel."""
+
+    @abstractmethod
+    def is_fasilitator(self, sender_id: str) -> bool:
+        """Check if sender is the fasilitator.
+
+        For Telegram: compare with fasilitator_telegram_id
+        For WhatsApp: compare with fasilitator_phone
+        """

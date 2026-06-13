@@ -124,6 +124,11 @@ class ProgressTrackerAgent(BaseAgent):
     # --------------------------------------------------------------------- #
 
     async def process(self, message: str, context: dict) -> str:
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
+
         source = context.get("source", "chat")
         if source == "google_form":
             return await self.process_form_submission(context["form_data"], context)

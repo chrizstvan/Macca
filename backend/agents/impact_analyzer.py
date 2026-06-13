@@ -23,6 +23,11 @@ class ImpactAnalyzerAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         """Produce an impact analysis from verified collection reports."""
+        context = self.build_context_flags(context)
+        volunteer = await self.get_volunteer_flexible(context)
+        if volunteer is not None:
+            context.setdefault("volunteer", volunteer)
+
         reports = (
             db.table("reports")
             .select("kg_collected, location, reported_at, verified")
