@@ -11,6 +11,7 @@ from backend.config import settings
 from backend.database.supabase_client import db
 from backend.utils.impact_calculator import ImpactCalculator
 from .base_agent import BaseAgent
+from .prompts.progress_tracker import PARSE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,6 @@ INQUIRY_KEYWORDS = (
     "berapa", "sudah berapa", "progress", "total", "sisa",
     "kuota", "pencapaian", "sudah sampai mana",
 )
-
-PARSE_PROMPT = """Extract plastic collection report data from this message.
-Return ONLY valid JSON, no explanation.
-Format: {"kg": float_or_null, "location": "string_or_null"}
-
-Examples:
-  "laporan 18 kg menteng" → {"kg": 18.0, "location": "Menteng"}
-  "udah nih 25 kilo di cikini kak" → {"kg": 25.0, "location": "Cikini"}
-  "selesai 12.5 kg gondangdia" → {"kg": 12.5, "location": "Gondangdia"}
-  "laporan foto" → {"kg": null, "location": null}"""
 
 KG_FIELDS = ("Berat Plastik (kg)", "Berat (kg)", "Kg", "Berat")
 LOC_FIELDS = ("Lokasi Pengumpulan", "Lokasi", "Area", "Kelurahan")

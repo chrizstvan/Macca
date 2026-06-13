@@ -1,15 +1,8 @@
 """Fasilitator hub agent providing operational tools for mission facilitators."""
 
 from .base_agent import BaseAgent
+from .prompts.fasilitator_hub import SYSTEM_PROMPT
 from backend.database.supabase_client import db
-
-SYSTEM_PROMPT = (
-    "You are the Fasilitator Hub assistant for Macca, a volunteer coordination platform "
-    "for waste collection missions. You assist the fasilitator who coordinates volunteers "
-    "on the ground. Provide concise operational summaries, highlight flagged reports that "
-    "need verification, surface volunteers behind on quota, and help draft broadcasts. "
-    "Tone: efficient, clear, action-oriented. Format for Telegram."
-)
 
 
 class FasilitatorHubAgent(BaseAgent):
