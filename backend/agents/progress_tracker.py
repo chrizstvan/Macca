@@ -120,6 +120,9 @@ class ProgressTrackerAgent(BaseAgent):
         if volunteer is not None:
             context.setdefault("volunteer", volunteer)
 
+        if context.get("persona") == "fasilitator":
+            return await self._program_summary(context)
+
         source = context.get("source", "chat")
         if source == "google_form":
             return await self.process_form_submission(context["form_data"], context)
@@ -545,6 +548,53 @@ class ProgressTrackerAgent(BaseAgent):
             volunteer, mission, kg, location, photo_url, raw_message,
             source, extra_data, skip_duplicate_check,
         )
+
+    async def _program_summary(self, context: dict) -> str:
+        """Fasilitator-persona view: program-wide totals + who's behind on quota."""
+        missions = (
+            db.table("missions").select("*").eq("status", "active").execute().data
+            or []
+        )
+        if not missions:
+            return "Belum ada misi aktif. Tidak ada progress untuk dirangkum."
+
+        chunks: list[str] = []
+        for mission in missions:
+            assignments = (
+                db.table("volunteer_missions")
+                .select(
+                    "quota_kg, reported_kg, assigned_area, volunteers(name)"
+                )
+                .eq("mission_id", mission["id"])
+                .execute()
+                .data
+                or []
+            )
+            total_quota = sum(float(a.get("quota_kg") or 0) for a in assignments)
+            total_reported = sum(float(a.get("reported_kg") or 0) for a in assignments)
+            pct = (total_reported / total_quota * 100) if total_quota else 0
+
+            behind: list[dict] = []
+            for assignment in assignments:
+                quota = float(assignment.get("quota_kg") or 0)
+                reported = float(assignment.get("reported_kg") or 0)
+                if quota > 0 and reported / quota < 0.5:
+                    behind.append(assignment)
+
+            lines = [
+                f"📊 *{mission.get('title')}*",
+                f"Progress program: {total_reported:g}/{total_quota:g} kg ({pct:.1f}%)",
+                f"Volunteer ter-assign: {len(assignments)}",
+                f"Tertinggal (<50% kuota): {len(behind)}",
+            ]
+            if behind:
+                names = [
+                    (a.get("volunteers") or {}).get("name", "?") for a in behind[:10]
+                ]
+                lines.append("Yang tertinggal: " + ", ".join(names))
+            chunks.append("\n".join(lines))
+
+        return "\n\n".join(chunks)
 
     @staticmethod
     def _get_active_mission(volunteer_id: str) -> dict | None:
