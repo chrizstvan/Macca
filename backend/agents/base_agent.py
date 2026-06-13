@@ -69,12 +69,18 @@ class BaseAgent(ABC):
             logger.error("[%s] Claude API error: %s", self.name, exc)
             return FALLBACK_MESSAGE
 
-    async def get_chat_history(self, telegram_id: int, limit: int = 10) -> list:
+    async def get_chat_history(
+        self, telegram_id: int | None, limit: int = 10
+    ) -> list:
         """Fetch the last ``limit`` messages for a user, oldest first.
 
-        Returns a list of ``{"role": "user"|"assistant", "content": str}``
-        dicts ready to pass to the Claude messages API.
+        Returns ``[]`` when ``telegram_id`` is falsy (e.g. WhatsApp users —
+        the chat_history table is keyed by Telegram bigint and has no phone
+        column yet, so we skip persistence for non-Telegram channels until
+        a schema update lands).
         """
+        if not telegram_id:
+            return []
         result = (
             db.table("chat_history")
             .select("role, content")
@@ -87,9 +93,18 @@ class BaseAgent(ABC):
         return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
     async def save_chat_history(
-        self, telegram_id: int, role: str, content: str, agent_module: str
+        self,
+        telegram_id: int | None,
+        role: str,
+        content: str,
+        agent_module: str,
     ) -> None:
-        """Persist a single message to the chat_history table."""
+        """Persist a single message to the chat_history table.
+
+        No-op when ``telegram_id`` is falsy — see get_chat_history for why.
+        """
+        if not telegram_id:
+            return
         db.table("chat_history").insert(
             {
                 "telegram_id": telegram_id,
