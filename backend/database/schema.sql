@@ -14,7 +14,8 @@ create table if not exists volunteers (
     team        text[],        -- array of teammate names
     quota_kg    numeric not null default 20,
     joined_at   timestamptz default now(),
-    is_active   boolean default true
+    is_active   boolean default true,
+    points      integer default 0 -- quiz/gamification points
 );
 
 create table if not exists missions (
@@ -61,6 +62,16 @@ create table if not exists chat_history (
     created_at   timestamptz default now()
 );
 
+create table if not exists active_quizzes (
+    id          uuid primary key default gen_random_uuid(),
+    question    text not null,
+    options     jsonb not null, -- list of "A) ..." strings
+    answer      text not null,  -- correct letter, e.g. 'B'
+    explanation text,
+    created_at  timestamptz default now(),
+    expires_at  timestamptz not null
+);
+
 create table if not exists notifications (
     id          uuid primary key default gen_random_uuid(),
     telegram_id bigint not null,
@@ -87,3 +98,13 @@ create index if not exists idx_chat_history_created_at on chat_history (created_
 --     check (source in ('telegram', 'whatsapp', 'google_form'));
 -- alter table reports add column extra_data jsonb default '{}';
 -- alter table volunteer_missions add column reported_kg numeric default 0;
+-- alter table volunteers add column points integer default 0;
+-- create table if not exists active_quizzes (
+--     id          uuid primary key default gen_random_uuid(),
+--     question    text not null,
+--     options     jsonb not null,
+--     answer      text not null,
+--     explanation text,
+--     created_at  timestamptz default now(),
+--     expires_at  timestamptz not null
+-- );

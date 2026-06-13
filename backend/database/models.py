@@ -18,6 +18,7 @@ class Volunteer:
     quota_kg: float = 20.0
     joined_at: datetime | None = None
     is_active: bool = True
+    points: int = 0
 
 
 @dataclass
@@ -73,6 +74,19 @@ class ChatHistory:
     content: str
     id: UUID | None = None
     agent_module: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass
+class ActiveQuiz:
+    """A weekly plastic-knowledge quiz open for answers until it expires."""
+
+    question: str
+    options: list[str]
+    answer: str  # correct letter, e.g. "B"
+    expires_at: datetime
+    id: UUID | None = None
+    explanation: str | None = None
     created_at: datetime | None = None
 
 

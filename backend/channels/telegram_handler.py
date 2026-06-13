@@ -76,11 +76,14 @@ def init_agents() -> RouterAgent:
     """Initialise the agent registry and router exactly once."""
     global _router, _image_handler
     if _router is None:
+        volunteer_support = VolunteerSupportAgent()
         _router = RouterAgent(
             {
                 "mission_briefing": MissionBriefingAgent(),
                 "progress_tracker": ProgressTrackerAgent(),
-                "volunteer_support": VolunteerSupportAgent(),
+                "volunteer_support": volunteer_support,
+                # education questions are handled by the same support agent
+                "plastic_education": volunteer_support,
                 "content_creator": ContentCreatorAgent(),
                 "impact_analyzer": ImpactAnalyzerAgent(),
                 "fasilitator_hub": FasilitatorHubAgent(),

@@ -12,7 +12,11 @@ from backend.agents.progress_tracker import ProgressTrackerAgent, cleanup_expire
 from backend.channels.telegram_handler import create_application, init_agents
 from backend.config import settings
 from backend.database.supabase_client import db, test_connection
-from backend.utils.scheduler import MaccaScheduler
+from backend.utils.scheduler import (
+    MaccaScheduler,
+    send_weekly_plastic_fact,
+    send_weekly_quiz,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,6 +52,10 @@ async def lifespan(app: FastAPI):
     scheduler.add_interval_job(
         cleanup_expired_pending, minutes=5, job_id="cleanup_pending_reports"
     )
+    scheduler.add_cron_job(
+        send_weekly_plastic_fact, "30 7 * * mon", job_id="weekly_plastic_fact"
+    )
+    scheduler.add_cron_job(send_weekly_quiz, "0 12 * * wed", job_id="weekly_quiz")
     scheduler.start()
 
     # 6. Announce
