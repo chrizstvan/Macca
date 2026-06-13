@@ -23,7 +23,7 @@ class ImpactAnalyzerAgent(BaseAgent):
 
         reports = (
             db.table("reports")
-            .select("kg_collected, location, reported_at, verified")
+            .select("kg_collected, location, reported_at, verified, is_flagged")
             .order("reported_at", desc=True)
             .limit(100)
             .execute()
@@ -32,6 +32,9 @@ class ImpactAnalyzerAgent(BaseAgent):
         )
         total = sum(float(r["kg_collected"]) for r in reports)
         extra = f"\n\nReport data ({len(reports)} reports, {total} kg total): {reports}"
+
+        if context.get("persona") == "fasilitator":
+            extra += self._fasilitator_breakdown(reports)
 
         telegram_id = context.get("telegram_id")
         messages = [{"role": "user", "content": message}]
@@ -42,3 +45,21 @@ class ImpactAnalyzerAgent(BaseAgent):
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", reply, self.name)
         return reply
+
+    @staticmethod
+    def _fasilitator_breakdown(reports: list[dict]) -> str:
+        """Add verified/flagged counts + top-5 areas for the fasilitator persona."""
+        verified = sum(1 for r in reports if r.get("verified"))
+        flagged = sum(1 for r in reports if r.get("is_flagged"))
+        by_area: dict[str, float] = {}
+        for r in reports:
+            location = (r.get("location") or "unknown")
+            by_area[location] = by_area.get(location, 0) + float(r.get("kg_collected") or 0)
+        top_areas = sorted(by_area.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_str = ", ".join(f"{a} ({kg:g} kg)" for a, kg in top_areas) or "-"
+        return (
+            "\n\nFasilitator breakdown:\n"
+            f"- Verified: {verified}/{len(reports)}\n"
+            f"- Flagged: {flagged}/{len(reports)}\n"
+            f"- Top 5 areas: {top_str}"
+        )

@@ -27,6 +27,9 @@ class MissionBriefingAgent(BaseAgent):
             context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
+        if context.get("persona") == "fasilitator":
+            return await self._brief_fasilitator(message, context)
+
         # 2. Volunteer profile (already loaded by the router/handler)
         if volunteer is None:
             volunteer = context.get("volunteer")
@@ -121,6 +124,67 @@ class MissionBriefingAgent(BaseAgent):
             )
 
         return f"{BASE_PROMPT}\n\n{volunteer_section}\n\n{mission_section}\n\n{SOP_SECTION}"
+
+    async def _brief_fasilitator(self, message: str, context: dict) -> str:
+        """Fasilitator-persona briefing: every active mission + every assignment."""
+        missions = self._fetch_active_missions_with_assignments()
+        summary = self._format_fasilitator_briefing(missions)
+        system_prompt = (
+            BASE_PROMPT
+            + "\n\nPERSONA: Fasilitator. Berikan info lengkap tentang semua misi "
+            "aktif dan volunteer yang ter-assign. Boleh sertakan rekomendasi "
+            "tindakan operasional."
+            + f"\n\n{summary}\n\n{SOP_SECTION}"
+        )
+        telegram_id = context.get("telegram_id")
+        history = await self.get_chat_history(telegram_id, limit=10)
+        messages = history + [{"role": "user", "content": message}]
+        response = await self.call_claude(system_prompt, messages, max_tokens=2000)
+        await self.save_chat_history(telegram_id, "user", message, self.name)
+        await self.save_chat_history(telegram_id, "assistant", response, self.name)
+        return response
+
+    @staticmethod
+    def _fetch_active_missions_with_assignments() -> list[dict]:
+        active = (
+            db.table("missions").select("*").eq("status", "active").execute().data or []
+        )
+        out = []
+        for mission in active:
+            assignments = (
+                db.table("volunteer_missions")
+                .select(
+                    "quota_kg, reported_kg, assigned_area, "
+                    "volunteers(name, phone, telegram_id)"
+                )
+                .eq("mission_id", mission["id"])
+                .execute()
+                .data
+                or []
+            )
+            out.append({"mission": mission, "assignments": assignments})
+        return out
+
+    @staticmethod
+    def _format_fasilitator_briefing(missions: list[dict]) -> str:
+        if not missions:
+            return "Tidak ada misi aktif saat ini."
+        lines: list[str] = []
+        for entry in missions:
+            mission = entry["mission"]
+            lines.append(
+                f"Misi: {mission.get('title')} — deadline {mission.get('deadline')}"
+            )
+            for assignment in entry["assignments"]:
+                volunteer = assignment.get("volunteers") or {}
+                quota = float(assignment.get("quota_kg") or 0)
+                reported = float(assignment.get("reported_kg") or 0)
+                lines.append(
+                    f"  • {volunteer.get('name') or '?'} — "
+                    f"{reported:g}/{quota:g} kg @ "
+                    f"{assignment.get('assigned_area') or '-'}"
+                )
+        return "Data misi aktif:\n" + "\n".join(lines)
 
     @staticmethod
     def _remaining_days(deadline: str | None) -> int | None:

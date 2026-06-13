@@ -1,7 +1,20 @@
-"""Router agent: classifies every incoming message and delegates to a specialist agent."""
+"""Router agent: classifies every incoming message and delegates to a specialist agent.
+
+Adds two cross-cutting features on top of plain routing:
+
+* **Test mode** — the fasilitator can run ``/test_as <name>`` to temporarily
+  impersonate a volunteer. Subsequent messages from the fasilitator are
+  routed as if they came from that volunteer. ``/test_off`` clears it,
+  ``/test_status`` reports the current binding.
+* **Dual-persona routing** — every dispatch sets ``context["persona"]`` to
+  either ``"fasilitator"`` or ``"volunteer"`` so downstream agents can
+  return wider or narrower data accordingly.
+"""
 
 import logging
 
+from backend.config import settings
+from backend.database.supabase_client import db
 from .base_agent import BaseAgent
 from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
@@ -16,7 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTENT = "volunteer_support"
 
 # fasilitator_hub is intentionally absent: it is reachable only via the
-# telegram_id check in process(), never via classification.
+# is_fasilitator check in route(), never via classification.
 VALID_INTENTS = (
     "mission_briefing",
     "progress_tracker",
@@ -24,6 +37,18 @@ VALID_INTENTS = (
     "content_creator",
     "impact_analyzer",
 )
+
+# ---------------------------------------------------------------------- #
+# Test mode — module-level so it survives across messages within a       #
+# single process. Keyed by sender_phone (WhatsApp) or str(telegram_id).  #
+# Value: volunteer_id (UUID string) that the fasilitator is impersonating.
+# ---------------------------------------------------------------------- #
+test_mode_state: dict[str, str] = {}
+
+
+def _sender_key(context: dict) -> str:
+    """Resolve a unified key from either channel's sender identifier."""
+    return context.get("sender_phone") or str(context.get("telegram_id") or "")
 
 
 class RouterAgent(BaseAgent):
@@ -44,6 +69,43 @@ class RouterAgent(BaseAgent):
         }
         self.last_agent: str = self.name
 
+    # ------------------------------------------------------------------ #
+    # Identity / intent helpers                                           #
+    # ------------------------------------------------------------------ #
+
+    def detect_fasilitator(self, context: dict) -> bool:
+        """True if either channel identifier matches a configured fasilitator."""
+        phone = (context.get("sender_phone") or "").strip()
+        tg_id = context.get("telegram_id") or 0
+        if phone and settings.fasilitator_phone and phone == settings.fasilitator_phone:
+            return True
+        if tg_id and settings.fasilitator_telegram_id and tg_id == settings.fasilitator_telegram_id:
+            return True
+        return False
+
+    async def classify_intent(self, message: str, context: dict) -> str:
+        """Pending-report short-circuit + Claude Haiku classification."""
+        if has_pending_report(context.get("telegram_id")):
+            return "progress_tracker"
+
+        label = await self.call_claude(
+            CLASSIFICATION_PROMPT,
+            [{"role": "user", "content": message}],
+            max_tokens=20,
+        )
+        intent = label.strip().lower()
+        if intent not in VALID_INTENTS:
+            logger.warning("Invalid intent %r, defaulting to %s", intent, DEFAULT_INTENT)
+            intent = DEFAULT_INTENT
+        return intent
+
+    def get_agent_for_intent(self, intent: str) -> BaseAgent:
+        return self._agents[intent]
+
+    # ------------------------------------------------------------------ #
+    # Process (kept for callers that only want the intent label)         #
+    # ------------------------------------------------------------------ #
+
     async def process(self, message: str, context: dict) -> str:
         """Classify the message and return the intent category string."""
         context = self.build_context_flags(context)
@@ -51,36 +113,139 @@ class RouterAgent(BaseAgent):
         if volunteer is not None:
             context.setdefault("volunteer", volunteer)
 
-        # 1. Fasilitator always goes to the fasilitator hub
         if context["is_fasilitator"]:
             return "fasilitator_hub"
+        return await self.classify_intent(message, context)
 
-        # 1b. A volunteer mid-report (pending kg/location/confirmation) skips
-        #     classification — their reply belongs to the progress tracker
-        if has_pending_report(context.get("telegram_id")):
-            return "progress_tracker"
+    # ------------------------------------------------------------------ #
+    # Test mode commands                                                  #
+    # ------------------------------------------------------------------ #
 
-        # 2-3. Classify with Claude Haiku and normalise the label
-        label = await self.call_claude(
-            CLASSIFICATION_PROMPT,
-            [{"role": "user", "content": message}],
-            max_tokens=20,
-        )
-        intent = label.strip().lower()
+    async def handle_test_commands(
+        self, message: str, sender_key: str
+    ) -> str | None:
+        """Handle ``/test_as``, ``/test_off``, ``/test_status``.
 
-        # 4. Unknown labels (including fasilitator_hub for non-fasilitators)
-        #    fall back to volunteer_support
-        if intent not in VALID_INTENTS:
-            logger.warning("Invalid intent %r, defaulting to %s", intent, DEFAULT_INTENT)
-            intent = DEFAULT_INTENT
+        Returns the user-facing reply text, or ``None`` if the message is not
+        a recognised test command (caller continues with normal routing).
+        """
+        cmd = message.strip()
+        lowered = cmd.lower()
 
-        # 5. Return the category string
-        return intent
+        if lowered.startswith("/test_off"):
+            removed = test_mode_state.pop(sender_key, None)
+            if removed:
+                return "🧪 Test mode dinonaktifkan. Kembali ke mode fasilitator."
+            return "Test mode memang belum aktif."
+
+        if lowered.startswith("/test_status"):
+            current = test_mode_state.get(sender_key)
+            if not current:
+                return "Test mode: *tidak aktif*. Gunakan `/test_as <nama>` untuk mulai."
+            volunteer = self._get_volunteer_by_id(current)
+            if volunteer is None:
+                test_mode_state.pop(sender_key, None)
+                return "Test mode bound ke volunteer yang tidak ditemukan — direset."
+            return (
+                "🧪 Test mode aktif:\n"
+                f"Nama: {volunteer.get('name')} | Area: {volunteer.get('area')}\n"
+                f"Kuota: {volunteer.get('quota_kg')} kg"
+            )
+
+        if lowered.startswith("/test_as"):
+            name = cmd[len("/test_as"):].strip()
+            if not name:
+                return "Format: `/test_as <nama volunteer>`"
+            matches = self._find_volunteers_by_name(name)
+            if not matches:
+                return f"❌ Volunteer '{name}' tidak ditemukan."
+            if len(matches) > 1:
+                names = ", ".join(v.get("name", "") for v in matches)
+                return (
+                    f"Ada {len(matches)} volunteer: {names}. "
+                    "Sebutkan nama lengkap."
+                )
+            volunteer = matches[0]
+            test_mode_state[sender_key] = volunteer["id"]
+            return (
+                "🧪 Test mode aktif — kamu bertindak sebagai:\n"
+                f"Nama: {volunteer.get('name')} | Area: {volunteer.get('area')}\n"
+                f"Kuota: {volunteer.get('quota_kg')} kg\n"
+                "Ketik `/test_off` untuk kembali ke mode fasilitator."
+            )
+
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Route — main dispatcher                                             #
+    # ------------------------------------------------------------------ #
 
     async def route(self, message: str, context: dict) -> str:
         """Classify, delegate to the matching agent, and return its response."""
-        intent = await self.process(message, context)
-        agent = self._agents[intent]
+        context = self.build_context_flags(context)
+        # detect_fasilitator overrides what build_context_flags may have set
+        # because it also matches via sender_phone (the base helper only
+        # checks the normalised phone, which is identical, but keep them
+        # in sync explicitly to avoid drift if either changes later).
+        context["is_fasilitator"] = self.detect_fasilitator(context)
+
+        sender_key = _sender_key(context)
+
+        # 1. Fasilitator-only commands FIRST
+        if context["is_fasilitator"] and message.strip().lower().startswith("/test"):
+            response = await self.handle_test_commands(message, sender_key)
+            if response is not None:
+                self.last_agent = "router_test_commands"
+                return response
+
+        # 2. Test mode active → impersonate the bound volunteer
+        if context["is_fasilitator"] and sender_key in test_mode_state:
+            volunteer = self._get_volunteer_by_id(test_mode_state[sender_key])
+            if volunteer is None:
+                # Stale binding — clear it and continue as fasilitator
+                test_mode_state.pop(sender_key, None)
+            else:
+                context["volunteer"] = volunteer
+                context["is_fasilitator"] = False
+                context["is_test_mode"] = True
+
+        # 3. Fasilitator (not in test mode) → Fasilitator Hub
+        if context["is_fasilitator"]:
+            context["persona"] = "fasilitator"
+            agent = self._agents["fasilitator_hub"]
+            self.last_agent = agent.name
+            logger.info("Routing message to %s (persona=fasilitator)", agent.name)
+            return await agent.process(message, context)
+
+        # 4. Volunteer (including test-mode impersonation) → classify intent
+        context["persona"] = "volunteer"
+        intent = await self.classify_intent(message, context)
+        agent = self.get_agent_for_intent(intent)
         self.last_agent = agent.name
-        logger.info("Routing message to %s", agent.name)
+        logger.info(
+            "Routing message to %s (persona=volunteer, test_mode=%s)",
+            agent.name, context.get("is_test_mode", False),
+        )
         return await agent.process(message, context)
+
+    # ------------------------------------------------------------------ #
+    # Supabase helpers                                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _find_volunteers_by_name(name: str) -> list[dict]:
+        """Case-insensitive partial-name lookup."""
+        result = (
+            db.table("volunteers")
+            .select("id, name, area, quota_kg")
+            .ilike("name", f"%{name}%")
+            .execute()
+        )
+        return result.data or []
+
+    @staticmethod
+    def _get_volunteer_by_id(volunteer_id: str) -> dict | None:
+        result = (
+            db.table("volunteers").select("*").eq("id", volunteer_id).limit(1).execute()
+        )
+        return result.data[0] if result.data else None
