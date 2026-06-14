@@ -12,8 +12,10 @@ from backend.utils.phone_utils import normalize_phone
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # cost-efficient default
-COMPLEX_MODEL = "claude-sonnet-4-6"  # override for complex tasks
+# Snapshot at import time — overridable via env vars CLAUDE_DEFAULT_MODEL /
+# CLAUDE_COMPLEX_MODEL. See ``backend.config`` for defaults.
+DEFAULT_MODEL = settings.claude_default_model
+COMPLEX_MODEL = settings.claude_complex_model
 
 FALLBACK_MESSAGE = (
     "Sorry, I'm having trouble processing your message right now. "
@@ -43,14 +45,17 @@ class BaseAgent(ABC):
         system_prompt: str,
         messages: list,
         model: str = DEFAULT_MODEL,
-        max_tokens: int = 1000,
+        max_tokens: int | None = None,
     ) -> str:
         """Call Claude and return the response text.
 
-        Uses claude-haiku-4-5 by default for cost efficiency; pass
-        ``model=COMPLEX_MODEL`` (claude-sonnet-4-6) for complex tasks.
+        Uses the configured default model (Haiku) for cost efficiency;
+        pass ``model=COMPLEX_MODEL`` for complex tasks. ``max_tokens``
+        defaults to ``settings.default_max_tokens`` when omitted.
         Returns a friendly fallback message on API errors.
         """
+        if max_tokens is None:
+            max_tokens = settings.default_max_tokens
         try:
             response = await self.anthropic_client.messages.create(
                 model=model,

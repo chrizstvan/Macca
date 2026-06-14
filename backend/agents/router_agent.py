@@ -156,7 +156,15 @@ class RouterAgent(BaseAgent):
 
         Returns the user-facing reply text, or ``None`` if the message is not
         a recognised test command (caller continues with normal routing).
+        ``settings.test_mode_enabled=False`` short-circuits all three so
+        production deployments can disable impersonation without rebuilding.
         """
+        if not settings.test_mode_enabled:
+            return (
+                "Test mode dimatikan di environment ini. "
+                "Hubungi admin untuk mengaktifkan kembali."
+            )
+
         cmd = message.strip()
         lowered = cmd.lower()
 

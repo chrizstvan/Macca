@@ -36,21 +36,23 @@ class Settings:
 
     # WhatsApp Cloud API
     whatsapp_phone_number_id: str = ""
-    whatsapp_business_account_id: str = ""
     whatsapp_access_token: str = ""
     whatsapp_verify_token: str = ""
 
     # Fasilitator identity (works for both Telegram and WhatsApp)
     fasilitator_phone: str = ""
 
-    # Test mode
+    # Test mode — controls whether /test_as is allowed.
     test_mode_enabled: bool = True
 
-    # Active channel — which is primary right now
+    # Active channel — primary outbound channel; fallback is the other one.
     active_channel: str = "telegram"
 
-    claude_model: str = "claude-sonnet-4-6"
-    max_tokens: int = 1000
+    # Claude model defaults (override via env so we can swap models without
+    # touching code).
+    claude_default_model: str = "claude-haiku-4-5-20251001"
+    claude_complex_model: str = "claude-sonnet-4-6"
+    default_max_tokens: int = 1000
 
     def __new__(cls) -> "Settings":
         if cls._instance is None:
@@ -86,7 +88,6 @@ class Settings:
 
         # WhatsApp Cloud API (optional until channel enabled)
         self.whatsapp_phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-        self.whatsapp_business_account_id = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
         self.whatsapp_access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
         self.whatsapp_verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 
@@ -109,6 +110,21 @@ class Settings:
                 f"got: {active_channel!r}"
             )
         self.active_channel = active_channel
+
+        # Claude model + max-tokens defaults
+        self.claude_default_model = os.getenv(
+            "CLAUDE_DEFAULT_MODEL", "claude-haiku-4-5-20251001"
+        )
+        self.claude_complex_model = os.getenv(
+            "CLAUDE_COMPLEX_MODEL", "claude-sonnet-4-6"
+        )
+        try:
+            self.default_max_tokens = int(os.getenv("DEFAULT_MAX_TOKENS", "1000"))
+        except ValueError as exc:
+            raise SettingsError(
+                f"DEFAULT_MAX_TOKENS must be an integer, got: "
+                f"{os.getenv('DEFAULT_MAX_TOKENS')!r}"
+            ) from exc
 
     @staticmethod
     def _require(name: str) -> str:

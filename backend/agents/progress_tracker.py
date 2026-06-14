@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 from backend.database.supabase_client import db
 from backend.utils.date_utils import format_hhmm as _shared_format_hhmm
 from backend.utils.impact_calculator import ImpactCalculator
-from backend.utils.photo_verifier import PhotoVerifier
 from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
 
 from .base_agent import BaseAgent
@@ -326,185 +325,20 @@ class ProgressTrackerAgent(BaseAgent):
             )
             return "Tidak ada misi aktif untuk volunteer ini."
 
-        return await self.validate_and_save(
-            volunteer, mission, kg, location, photo_url, raw_message,
-            source="google_form", extra_data=extra_data, context=context,
+        # Form submissions go through the same use case as chat reports.
+        # context["volunteer"]/["mission"] are already populated above so
+        # ``_finalize`` won't re-fetch them.
+        context["volunteer"] = volunteer
+        context["mission"] = mission
+        return await self._finalize(
+            context,
+            kg,
+            location,
+            photo_url,
+            raw_message=raw_message,
+            source="google_form",
+            extra_data=extra_data,
         )
-
-    # --------------------------------------------------------------------- #
-    # Part 4 — validate and save (shared)                                     #
-    # --------------------------------------------------------------------- #
-
-    async def validate_and_save(
-        self,
-        volunteer: dict,
-        mission: dict,
-        kg: float,
-        location: str,
-        photo_url: str | None,
-        raw_message: str,
-        source: str,
-        extra_data: dict | None = None,
-        skip_duplicate_check: bool = False,
-        context: dict | None = None,
-    ) -> str:
-        # Check 1 — kg range
-        if kg <= 0:
-            return "Berat harus lebih dari 0 kg"
-        if kg > 999:
-            return "Berat terlalu besar, mohon periksa kembali"
-
-        # Check 2 — quota threshold flag
-        flag_reasons: list[str] = []
-        quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
-        if quota and kg > quota * 2:
-            flag_reasons.append(f"Berat {kg:g}kg melebihi 2x kuota ({quota:g}kg)")
-
-        # Check 3 — location vs assigned area (substring match either way)
-        assigned_area = (volunteer.get("area") or "").lower()
-        reported_location = location.lower()
-        if (
-            assigned_area
-            and assigned_area not in reported_location
-            and reported_location not in assigned_area
-        ):
-            flag_reasons.append(
-                f"Lokasi '{location}' di luar area tugas '{volunteer['area']}'"
-            )
-
-        # Check 4 — multi-turn duplicate clarification (3-tier classifier)
-        if not skip_duplicate_check:
-            existing = self._find_latest_today(volunteer["id"], mission["id"])
-            if existing is not None:
-                verdict, ask_message = self._classify_duplicate(existing, kg, location)
-                if verdict in {"clear_duplicate", "ambiguous"}:
-                    pending_key = _pending_key(context) or volunteer.get("telegram_id")
-                    _set_pending(
-                        pending_key,
-                        "waiting_confirmation",
-                        {
-                            "kg": kg, "location": location, "photo_url": photo_url,
-                            "raw_message": raw_message, "source": source,
-                            "extra_data": extra_data,
-                            "existing_kg": float(existing["kg_collected"]),
-                        },
-                        existing_report_id=existing["id"],
-                    )
-                    return ask_message
-                # likely_addition → fall through and save normally
-
-        # Check 5 — vision-based photo verification
-        is_relay = source == "fasilitator_relay"
-        verifier = PhotoVerifier()
-        photo_result = await verifier.verify_or_skip(
-            photo_url=photo_url,
-            reported_kg=kg,
-            volunteer_area=volunteer.get("area") or "",
-            is_fasilitator_relay=is_relay,
-            require_photo=True,
-        )
-
-        # 5a. No photo and one is required → ask sender to retry
-        if photo_result.get("needs_photo"):
-            return photo_result["message"]
-
-        # 5b. Photo clearly does not show plastic → reject without saving
-        if photo_result.get("verdict") == "fail":
-            return (
-                f"Hai {volunteer.get('name', '')}! "
-                "Foto yang dikirim sepertinya bukan foto plastik. "
-                f"{photo_result.get('reason_id', '')}\n\n"
-                "Boleh kirim ulang foto plastik + timbangan ya? 📸"
-            )
-
-        # 5c. Suspect photo → save but flag
-        if photo_result.get("should_flag"):
-            photo_flag = photo_result.get("flag_reason")
-            if photo_flag:
-                flag_reasons.append(photo_flag)
-
-        is_flagged = bool(flag_reasons)
-        flag_reason = " | ".join(flag_reasons) if flag_reasons else None
-
-        # Fasilitator-relayed reports are pre-verified by the fasilitator.
-        verified = is_relay
-
-        # Stamp per-channel test mode so dashboards can filter out forensic data.
-        is_test = bool((context or {}).get("is_test_mode"))
-
-        report_extra = dict(extra_data or {})
-        report_extra["photo_verification"] = photo_result
-
-        report_repository.insert_report(
-            {
-                "volunteer_id": volunteer["id"],
-                "mission_id": mission["id"],
-                "kg_collected": kg,
-                "location": location,
-                "photo_url": photo_url,
-                "raw_message": raw_message,
-                "source": source,
-                "extra_data": report_extra,
-                "is_flagged": is_flagged,
-                "flag_reason": flag_reason,
-                "verified": verified,
-                "is_test": is_test,
-            }
-        )
-
-        total_reported = report_repository.sync_reported_kg(volunteer["id"], mission["id"])
-
-        # Fire-and-forget impact-score recompute so the reply isn't blocked.
-        try:
-            import asyncio
-
-            from backend.utils.ranking_calculator import RankingCalculator
-
-            asyncio.create_task(RankingCalculator().refresh_volunteer(volunteer["id"]))
-        except Exception as exc:
-            logger.warning("Could not schedule rank refresh for %s: %s", volunteer["id"], exc)
-
-        if is_flagged:
-            await _alert_fasilitator(
-                f"🚩 Laporan perlu dicek dari {volunteer['name']}:\n"
-                f"📦 {kg:g} kg di {location} (via {source})\n"
-                f"⚠️ Alasan: {flag_reason}\n"
-                "Cek di dashboard → Reports → Perlu Dicek"
-            )
-
-        impact = ImpactCalculator.format_impact_summary(kg)
-        remaining = max(quota - total_reported, 0)
-        pct = (total_reported / quota * 100) if quota else 0
-
-        if pct >= 100:
-            status_line = "🎉 SELESAI! Kamu sudah memenuhi kuota misimu!"
-        elif pct >= 75:
-            status_line = f"Hampir selesai! Sisa {remaining:.1f} kg lagi 💪"
-        elif pct >= 50:
-            status_line = f"Sudah separuh jalan! Sisa {remaining:.1f} kg"
-        else:
-            status_line = f"Good start! Masih ada {remaining:.1f} kg lagi"
-
-        confirmation = (
-            f"✅ Laporan diterima, {volunteer['name']}!\n"
-            f"📦 {kg:g} kg dari {location} tercatat.\n"
-            f"📊 Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%) — {status_line}\n\n"
-            f"🌍 Dampak hari ini:\n"
-            f"  🍶 {impact['bottles']:,} botol diselamatkan\n"
-            f"  🌿 {impact['co2_kg']:.1f} kg CO₂ dicegah"
-        )
-        if source == "google_form":
-            confirmation += "\n\n📋 Laporan via form berhasil diterima!"
-        if is_relay:
-            confirmation += "\n\n✅ Diverifikasi fasilitator."
-            # Also DM the target volunteer so they see the credit landing.
-            await _notify_volunteer(
-                volunteer,
-                f"📨 Fasilitator mencatat laporan kamu: {kg:g} kg di {location}.\n"
-                f"Status: terverifikasi.\n"
-                f"Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%)",
-            )
-        return confirmation
 
     # --------------------------------------------------------------------- #
     # Part 6 — progress inquiry                                               #
@@ -639,7 +473,7 @@ class ProgressTrackerAgent(BaseAgent):
         extra_data: dict | None = None,
         skip_duplicate_check: bool = False,
     ) -> str:
-        """Resolve volunteer + mission from context, then validate_and_save."""
+        """Resolve volunteer + mission from context, then route via SubmitReport."""
         volunteer = context.get("volunteer")
         if volunteer is None and context.get("telegram_id"):
             volunteer = await self.get_volunteer(context["telegram_id"])
@@ -654,10 +488,218 @@ class ProgressTrackerAgent(BaseAgent):
                 "Belum ada misi aktif, jadi laporanmu belum bisa dicatat. "
                 "Hubungi fasilitator ya 🙏"
             )
-        return await self.validate_and_save(
-            volunteer, mission, kg, location, photo_url, raw_message,
-            source, extra_data, skip_duplicate_check, context=context,
+
+        return await self._submit_via_use_case(
+            context=context,
+            volunteer=volunteer,
+            mission=mission,
+            kg=kg,
+            location=location,
+            photo_url=photo_url,
+            raw_message=raw_message,
+            source=source,
+            extra_data=extra_data,
+            skip_duplicate_check=skip_duplicate_check,
         )
+
+    # ------------------------------------------------------------------ #
+    # SubmitReport use-case bridge                                        #
+    # ------------------------------------------------------------------ #
+
+    async def _submit_via_use_case(
+        self,
+        *,
+        context: dict,
+        volunteer: dict,
+        mission: dict,
+        kg: float,
+        location: str,
+        photo_url: str | None,
+        raw_message: str,
+        source: str,
+        extra_data: dict | None,
+        skip_duplicate_check: bool,
+    ) -> str:
+        """Route the save through the SubmitReport use case + translate outcome."""
+        # Lazy import keeps composition root out of the agent's startup path.
+        from uuid import UUID
+
+        from backend.application.use_cases.submit_report import (
+            DuplicateClarificationNeeded,
+            NeedsPhoto,
+            PhotoRejected,
+            Saved,
+        )
+        from backend.domain.errors import InvalidKg
+        from backend.infrastructure.composition_root import build_submit_report
+
+        use_case = build_submit_report()
+        try:
+            outcome = await use_case.execute(
+                volunteer_id=UUID(str(volunteer["id"])),
+                kg_value=kg,
+                location=location,
+                source=source,
+                photo_url=photo_url,
+                is_test=bool((context or {}).get("is_test_mode")),
+                skip_duplicate_check=skip_duplicate_check,
+                extra_data=extra_data,
+            )
+        except InvalidKg as exc:
+            return str(exc)
+
+        if isinstance(outcome, NeedsPhoto):
+            return outcome.message
+
+        if isinstance(outcome, PhotoRejected):
+            return (
+                f"Hai {volunteer.get('name', '')}! "
+                "Foto yang dikirim sepertinya bukan foto plastik. "
+                f"{outcome.reason}\n\n"
+                "Boleh kirim ulang foto plastik + timbangan ya? 📸"
+            )
+
+        if isinstance(outcome, DuplicateClarificationNeeded):
+            return self._handle_duplicate_clarification(
+                outcome=outcome,
+                kg=kg,
+                location=location,
+                photo_url=photo_url,
+                raw_message=raw_message,
+                source=source,
+                extra_data=extra_data,
+                context=context,
+            )
+
+        assert isinstance(outcome, Saved)
+        return await self._after_save(
+            saved=outcome,
+            volunteer=volunteer,
+            mission=mission,
+            source=source,
+        )
+
+    def _handle_duplicate_clarification(
+        self,
+        *,
+        outcome,
+        kg: float,
+        location: str,
+        photo_url: str | None,
+        raw_message: str,
+        source: str,
+        extra_data: dict | None,
+        context: dict,
+    ) -> str:
+        """Park pending state + render the spec-exact ask message."""
+        existing = outcome.existing
+        existing_kg = existing.kg_collected.value
+        existing_loc = existing.location
+        time_str = self._format_local_time(
+            existing.reported_at.isoformat() if existing.reported_at else None
+        )
+
+        if outcome.verdict.value == "clear_duplicate":
+            ask = (
+                f"Kamu tadi sudah submit {existing_kg:g} kg dari "
+                f"{existing_loc} pada pukul {time_str}. "
+                "Ini laporan tambahan atau sama?"
+            )
+        else:
+            ask = (
+                f"Tadi kamu sudah lapor {existing_kg:g} kg pada {time_str}. "
+                f"Laporan baru ini {kg:g} kg — ini tambahan atau koreksi "
+                "laporan tadi?"
+            )
+
+        pending_key = _pending_key(context) or (
+            (context.get("volunteer") or {}).get("telegram_id")
+        )
+        _set_pending(
+            pending_key,
+            "waiting_confirmation",
+            {
+                "kg": kg,
+                "location": location,
+                "photo_url": photo_url,
+                "raw_message": raw_message,
+                "source": source,
+                "extra_data": extra_data,
+                "existing_kg": existing_kg,
+            },
+            existing_report_id=str(existing.id),
+        )
+        return ask
+
+    async def _after_save(
+        self,
+        *,
+        saved,
+        volunteer: dict,
+        mission: dict,
+        source: str,
+    ) -> str:
+        """Post-save side effects + confirmation text (matches legacy format)."""
+        import asyncio as _asyncio
+
+        report = saved.report
+        total_reported = saved.total_kg
+        quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
+
+        # Fasilitator alert on flagged reports
+        if report.is_flagged:
+            await _alert_fasilitator(
+                f"🚩 Laporan perlu dicek dari {volunteer.get('name', '')}:\n"
+                f"📦 {report.kg_collected.value:g} kg di {report.location} "
+                f"(via {source})\n"
+                f"⚠️ Alasan: {report.flag_reason}\n"
+                "Cek di dashboard → Reports → Perlu Dicek"
+            )
+
+        # Fire-and-forget rank refresh
+        try:
+            from backend.utils.ranking_calculator import RankingCalculator
+
+            _asyncio.create_task(
+                RankingCalculator().refresh_volunteer(str(report.volunteer_id))
+            )
+        except Exception as exc:
+            logger.warning("Could not schedule rank refresh: %s", exc)
+
+        impact = ImpactCalculator.format_impact_summary(report.kg_collected.value)
+        remaining = max(quota - total_reported, 0)
+        pct = (total_reported / quota * 100) if quota else 0
+
+        if pct >= 100:
+            status_line = "🎉 SELESAI! Kamu sudah memenuhi kuota misimu!"
+        elif pct >= 75:
+            status_line = f"Hampir selesai! Sisa {remaining:.1f} kg lagi 💪"
+        elif pct >= 50:
+            status_line = f"Sudah separuh jalan! Sisa {remaining:.1f} kg"
+        else:
+            status_line = f"Good start! Masih ada {remaining:.1f} kg lagi"
+
+        confirmation = (
+            f"✅ Laporan diterima, {volunteer.get('name', '')}!\n"
+            f"📦 {report.kg_collected.value:g} kg dari {report.location} tercatat.\n"
+            f"📊 Progress: {total_reported:g}/{quota:g} kg "
+            f"({pct:.0f}%) — {status_line}\n\n"
+            f"🌍 Dampak hari ini:\n"
+            f"  🍶 {impact['bottles']:,} botol diselamatkan\n"
+            f"  🌿 {impact['co2_kg']:.1f} kg CO₂ dicegah"
+        )
+        if source == "google_form":
+            confirmation += "\n\n📋 Laporan via form berhasil diterima!"
+        if source == "fasilitator_relay":
+            confirmation += "\n\n✅ Diverifikasi fasilitator."
+            await _notify_volunteer(
+                volunteer,
+                f"📨 Fasilitator mencatat laporan kamu: "
+                f"{report.kg_collected.value:g} kg di {report.location}.\n"
+                f"Status: terverifikasi.\n"
+                f"Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%)",
+            )
+        return confirmation
 
     async def _program_summary(self, context: dict) -> str:
         """Fasilitator-persona view: program-wide totals + who's behind on quota."""
