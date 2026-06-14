@@ -9,6 +9,7 @@ from telegram import Update
 
 from backend.agents import progress_tracker as progress_tracker_module
 from backend.agents.progress_tracker import ProgressTrackerAgent, cleanup_expired_pending
+from backend.utils.ranking_calculator import RankingCalculator
 from backend.channels.telegram_handler import create_application, init_agents
 from backend.channels.whatsapp_handler import WhatsAppHandler
 from backend.config import settings
@@ -50,6 +51,11 @@ async def lifespan(app: FastAPI):
     # 5. Periodic jobs
     scheduler.add_interval_job(
         cleanup_expired_pending, minutes=5, job_id="cleanup_pending_reports"
+    )
+    scheduler.add_cron_job(
+        RankingCalculator().update_all_rankings,
+        "0 23 * * *",
+        job_id="daily_ranking_refresh",
     )
     scheduler.start()
 

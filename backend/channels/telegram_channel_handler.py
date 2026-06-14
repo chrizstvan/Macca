@@ -15,9 +15,8 @@ double-wiring the Application instance.
 import logging
 from typing import Any
 
-import httpx
-
 from backend.config import settings
+from backend.utils.http_dispatcher import get_bytes, get_json, post_json
 from .base_handler import BaseChannelHandler
 
 logger = logging.getLogger(__name__)
@@ -78,26 +77,23 @@ class TelegramHandler(BaseChannelHandler):
         """Resolve a Telegram file_id to bytes via getFile + CDN download."""
         if not media_id:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                meta = await client.get(
-                    f"{_api_base()}/getFile", params={"file_id": media_id}
-                )
-                meta.raise_for_status()
-                file_path = (meta.json().get("result") or {}).get("file_path")
-                if not file_path:
-                    logger.error("Telegram getFile %s: missing file_path", media_id)
-                    return None
-                cdn = (
-                    f"https://api.telegram.org/file/bot"
-                    f"{settings.telegram_bot_token}/{file_path}"
-                )
-                resp = await client.get(cdn)
-                resp.raise_for_status()
-                return resp.content
-        except httpx.HTTPError as exc:
-            logger.error("Telegram download_media %s failed: %s", media_id, exc)
+        ok, body = await get_json(
+            f"{_api_base()}/getFile",
+            params={"file_id": media_id},
+            timeout=30,
+            log_label="telegram.getFile",
+        )
+        if not ok or not body:
             return None
+        file_path = (body.get("result") or {}).get("file_path")
+        if not file_path:
+            logger.error("Telegram getFile %s: missing file_path", media_id)
+            return None
+        cdn = (
+            f"https://api.telegram.org/file/bot"
+            f"{settings.telegram_bot_token}/{file_path}"
+        )
+        return await get_bytes(cdn, timeout=30, log_label="telegram.cdn")
 
     async def send_alert(self, text: str) -> None:
         if not settings.fasilitator_telegram_id:
@@ -117,18 +113,9 @@ class TelegramHandler(BaseChannelHandler):
         if not settings.telegram_bot_token:
             logger.error("Telegram bot token not configured")
             return False
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(f"{_api_base()}/{method}", json=payload)
-                resp.raise_for_status()
-            return True
-        except httpx.HTTPError as exc:
-            body = None
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    body = response.text
-                except Exception:
-                    body = None
-            logger.error("Telegram %s failed: %s — body: %s", method, exc, body)
-            return False
+        ok, _body = await post_json(
+            f"{_api_base()}/{method}",
+            payload,
+            log_label=f"telegram.{method}",
+        )
+        return ok

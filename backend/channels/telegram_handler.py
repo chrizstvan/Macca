@@ -41,6 +41,7 @@ from backend.agents import (
 from backend.config import settings
 from backend.database.supabase_client import db
 from backend.utils.image_handler import ImageHandler
+from backend.utils.query_utils import get_active_mission as _get_active_mission_shared
 
 logger = logging.getLogger(__name__)
 
@@ -240,20 +241,7 @@ def _get_volunteer(telegram_id: int) -> dict | None:
     return result.data[0] if result.data else None
 
 
-def _get_active_mission(volunteer_id: str) -> dict | None:
-    result = (
-        db.table("volunteer_missions")
-        .select("quota_kg, assigned_area, missions(*)")
-        .eq("volunteer_id", volunteer_id)
-        .execute()
-    )
-    for row in result.data or []:
-        mission = row.get("missions")
-        if mission and mission.get("status") == "active":
-            mission["quota_kg"] = row.get("quota_kg")
-            mission["assigned_area"] = row.get("assigned_area")
-            return mission
-    return None
+_get_active_mission = _get_active_mission_shared
 
 
 def _total_collected_kg(volunteer_id: str) -> float:

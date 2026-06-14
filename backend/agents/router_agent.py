@@ -15,14 +15,15 @@ import logging
 
 from backend.config import settings
 from backend.database.supabase_client import db
+from backend.utils.query_utils import find_volunteers_by_name
 from .base_agent import BaseAgent
 from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
 from .impact_analyzer import ImpactAnalyzerAgent
 from .mission_briefing import MissionBriefingAgent
-from .progress_tracker import ProgressTrackerAgent, has_pending_report
+from .progress_tracker import ProgressTrackerAgent, has_pending_report_for_context
 from .prompts.router import CLASSIFICATION_PROMPT
-from .volunteer_support import VolunteerSupportAgent
+from .volunteer_support import VolunteerSupportAgent, is_allowed_topic
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,15 @@ class RouterAgent(BaseAgent):
 
     async def classify_intent(self, message: str, context: dict) -> str:
         """Pending-report short-circuit + Claude Haiku classification."""
-        if has_pending_report(context.get("telegram_id")):
+        if has_pending_report_for_context(context):
             return "progress_tracker"
+
+        # Cheap off-topic gate: skip Claude classification entirely when the
+        # message is clearly outside the program scope. volunteer_support will
+        # short-circuit again with the canned OFF_TOPIC_RESPONSE.
+        if is_allowed_topic(message) is False:
+            logger.info("Off-topic message short-circuited to %s", DEFAULT_INTENT)
+            return DEFAULT_INTENT
 
         label = await self.call_claude(
             CLASSIFICATION_PROMPT,
@@ -208,6 +216,8 @@ class RouterAgent(BaseAgent):
                 context["volunteer"] = volunteer
                 context["is_fasilitator"] = False
                 context["is_test_mode"] = True
+                # Persist so downstream build_context_flags calls don't reset it.
+                context["test_volunteer_id"] = volunteer["id"]
 
         # 3. Fasilitator (not in test mode) → Fasilitator Hub
         if context["is_fasilitator"]:
@@ -232,16 +242,7 @@ class RouterAgent(BaseAgent):
     # Supabase helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _find_volunteers_by_name(name: str) -> list[dict]:
-        """Case-insensitive partial-name lookup."""
-        result = (
-            db.table("volunteers")
-            .select("id, name, area, quota_kg")
-            .ilike("name", f"%{name}%")
-            .execute()
-        )
-        return result.data or []
+    _find_volunteers_by_name = staticmethod(find_volunteers_by_name)
 
     @staticmethod
     def _get_volunteer_by_id(volunteer_id: str) -> dict | None:

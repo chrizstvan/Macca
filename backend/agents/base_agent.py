@@ -8,6 +8,7 @@ import anthropic
 
 from backend.config import settings
 from backend.database.supabase_client import db
+from backend.utils.phone_utils import normalize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -125,30 +126,14 @@ class BaseAgent(ABC):
         )
         return result.data[0] if result.data else None
 
-    @staticmethod
-    def _normalize_phone(phone: str) -> str:
-        """Normalize to digits-only Indonesian E.164 (62xxxxxxxxx).
-
-        Strips '+', spaces, hyphens, and parentheses; rewrites a leading
-        '08' to '628'. Returns empty string if input is empty/None.
-        """
-        if not phone:
-            return ""
-        cleaned = (
-            phone.strip()
-            .replace("+", "")
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
-        )
-        if cleaned.startswith("08"):
-            cleaned = "62" + cleaned[1:]
-        return cleaned
+    # Thin alias preserved for back-compat with subclasses that still call
+    # ``self._normalize_phone``; the canonical implementation now lives in
+    # ``backend.utils.phone_utils.normalize_phone``.
+    _normalize_phone = staticmethod(normalize_phone)
 
     async def get_volunteer_by_phone(self, phone: str) -> dict[str, Any] | None:
         """Fetch a volunteer by phone (normalised), or None if not registered."""
-        normalized = self._normalize_phone(phone)
+        normalized = normalize_phone(phone)
         if not normalized:
             return None
         result = (
@@ -181,8 +166,8 @@ class BaseAgent(ABC):
 
     def is_fasilitator(self, context: dict) -> bool:
         """True if the message sender is the fasilitator on either channel."""
-        sender_phone = self._normalize_phone(context.get("sender_phone") or "")
-        fasilitator_phone = self._normalize_phone(settings.fasilitator_phone)
+        sender_phone = normalize_phone(context.get("sender_phone"))
+        fasilitator_phone = normalize_phone(settings.fasilitator_phone)
         if sender_phone and fasilitator_phone and sender_phone == fasilitator_phone:
             return True
 

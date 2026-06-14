@@ -1,13 +1,28 @@
 """Mission briefing agent: answers questions about mission, area, quota, deadline, and SOP."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from .base_agent import BaseAgent
 from .prompts.mission_briefing import BASE_PROMPT, SOP_SECTION
 from backend.database.supabase_client import db
+from backend.utils.date_utils import parse_iso_date as _shared_parse_iso_date
+from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
 
 logger = logging.getLogger(__name__)
+
+# Daily cap on free mission briefings per volunteer; further questions get a
+# short canned reply that points to the program guide, saving Claude tokens.
+MISSION_QUERY_DAILY_LIMIT = 2
+
+QUOTA_REACHED_MSG = (
+    "Kamu sudah 2x tanya tentang misi hari ini 😊 "
+    "Untuk info lengkap silakan buka panduan program ya!"
+)
+LAST_FREE_NOTICE = (
+    "\n\nIni adalah info misi terakhir yang bisa aku berikan hari ini. "
+    "Kalau masih ada pertanyaan, cek panduan program ya! 📖"
+)
 
 
 class MissionBriefingAgent(BaseAgent):
@@ -39,6 +54,11 @@ class MissionBriefingAgent(BaseAgent):
                 "Silakan DM bot ini dan ketik /start untuk registrasi ya!"
             )
 
+        # 1a. Daily quota: skip Claude entirely if the volunteer is over budget.
+        count, over_limit = self._consume_quota(volunteer)
+        if over_limit:
+            return QUOTA_REACHED_MSG
+
         # 1. Active mission from volunteer_missions + missions
         mission, assignment = self._get_active_mission(volunteer["id"])
         progress_kg = self._get_progress_kg(
@@ -53,6 +73,10 @@ class MissionBriefingAgent(BaseAgent):
         messages = history + [{"role": "user", "content": message}]
         response = await self.call_claude(system_prompt, messages)
 
+        # Append a "last free query" notice when this call uses up the budget.
+        if count == MISSION_QUERY_DAILY_LIMIT - 1:
+            response += LAST_FREE_NOTICE
+
         # 5. Persist both sides of the exchange
         if telegram_id:
             await self.save_chat_history(telegram_id, "user", message, self.name)
@@ -61,19 +85,12 @@ class MissionBriefingAgent(BaseAgent):
         # 6. Return the response
         return response
 
-    def _get_active_mission(self, volunteer_id: str) -> tuple[dict | None, dict | None]:
-        """Return (mission, assignment) for the volunteer's active mission, if any."""
-        result = (
-            db.table("volunteer_missions")
-            .select("quota_kg, assigned_area, missions(*)")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-        )
-        for row in result.data or []:
-            mission = row.get("missions")
-            if mission and mission.get("status") == "active":
-                return mission, row
-        return None, None
+    @staticmethod
+    def _get_active_mission(
+        volunteer_id: str,
+    ) -> tuple[dict | None, dict | None]:
+        """Return (mission, assignment) for the volunteer's active mission."""
+        return _shared_get_active_mission(volunteer_id, with_assignment=True)
 
     def _get_progress_kg(self, volunteer_id: str, mission_id: str | None) -> float:
         """Sum of kg reported by this volunteer (scoped to the mission when known)."""
@@ -185,6 +202,61 @@ class MissionBriefingAgent(BaseAgent):
                     f"{assignment.get('assigned_area') or '-'}"
                 )
         return "Data misi aktif:\n" + "\n".join(lines)
+
+    def _consume_quota(self, volunteer: dict) -> tuple[int, bool]:
+        """Update the volunteer's daily mission-query budget and report the state.
+
+        Returns ``(count_before_this_call, over_limit)``.
+
+        ``count_before_this_call`` is the count this request is allowed to use
+        (so the caller can decide whether to append the "last free" notice).
+        ``over_limit`` is True when the volunteer has already hit the cap
+        today — caller should return the canned reply and skip the LLM call.
+
+        If the schema columns are missing (dev environments without the
+        migration), no enforcement happens and ``(0, False)`` is returned.
+        """
+        try:
+            raw_reset = volunteer.get("mission_query_reset_at")
+            raw_count = int(volunteer.get("mission_query_count") or 0)
+        except (TypeError, ValueError):
+            return 0, False
+
+        reset_date = self._parse_date(raw_reset)
+        today = date.today()
+
+        # Daily reset — new day means a fresh budget.
+        if reset_date is None or reset_date < today:
+            raw_count = 0
+            self._write_count(volunteer["id"], 0, today)
+
+        if raw_count >= MISSION_QUERY_DAILY_LIMIT:
+            return raw_count, True
+
+        # Reserve this slot before the LLM call so concurrent retries can't
+        # both pass the gate.
+        self._write_count(volunteer["id"], raw_count + 1, today)
+        return raw_count, False
+
+    _parse_date = staticmethod(_shared_parse_iso_date)
+
+    @staticmethod
+    def _write_count(volunteer_id: str, new_count: int, reset_at: date) -> None:
+        try:
+            (
+                db.table("volunteers")
+                .update(
+                    {
+                        "mission_query_count": new_count,
+                        "mission_query_reset_at": reset_at.isoformat(),
+                    }
+                )
+                .eq("id", volunteer_id)
+                .execute()
+            )
+        except Exception as exc:
+            # Schema migration may not have run yet; degrade to no-limit mode.
+            logger.warning("mission_query_count update failed: %s", exc)
 
     @staticmethod
     def _remaining_days(deadline: str | None) -> int | None:
