@@ -227,6 +227,12 @@ class RouterAgent(BaseAgent):
 
         sender_key = _sender_key(context)
 
+        # 0. Single-letter quiz answers — intercept before anything else.
+        quiz_reply = await self._maybe_handle_quiz_answer(message, context)
+        if quiz_reply is not None:
+            self.last_agent = "quiz_answer"
+            return quiz_reply
+
         # 1. Fasilitator-only commands FIRST
         if context["is_fasilitator"] and message.strip().lower().startswith("/test"):
             response = await self.handle_test_commands(message, sender_key)
@@ -265,6 +271,66 @@ class RouterAgent(BaseAgent):
             agent.name, context.get("is_test_mode", False),
         )
         return await agent.process(message, context)
+
+    # ------------------------------------------------------------------ #
+    # Quiz answer interception                                            #
+    # ------------------------------------------------------------------ #
+
+    _QUIZ_LETTERS = {"A", "B", "C", "D"}
+
+    async def _maybe_handle_quiz_answer(
+        self, message: str, context: dict
+    ) -> str | None:
+        """If ``message`` is a single A/B/C/D and a quiz is live, score it."""
+        candidate = (message or "").strip().upper()
+        if candidate not in self._QUIZ_LETTERS:
+            return None
+
+        from uuid import UUID
+
+        from backend.application.use_cases.handle_quiz_answer import (
+            Correct,
+            Incorrect,
+            NoActiveQuiz,
+        )
+        from backend.infrastructure.composition_root import (
+            build_handle_quiz_answer,
+        )
+
+        volunteer = context.get("volunteer") or await self.get_volunteer_flexible(
+            context
+        )
+        if volunteer is None:
+            return None  # not registered — let normal routing decide
+
+        use_case = build_handle_quiz_answer()
+        outcome = await use_case.execute(
+            volunteer_id=UUID(str(volunteer["id"])),
+            answer=candidate,
+        )
+        if isinstance(outcome, NoActiveQuiz):
+            return None  # no live quiz — let normal routing decide
+        if isinstance(outcome, Correct):
+            try:
+                from backend.utils.ranking_calculator import RankingCalculator
+
+                import asyncio as _asyncio
+
+                _asyncio.create_task(
+                    RankingCalculator().refresh_volunteer(str(volunteer["id"]))
+                )
+            except Exception as exc:
+                logger.warning("Quiz score refresh failed: %s", exc)
+            return (
+                f"🎉 Tepat sekali! +{outcome.points_awarded} poin.\n\n"
+                f"{outcome.quiz.explanation}"
+            )
+        # Incorrect
+        return (
+            "Belum tepat ya 😊\n\n"
+            f"Jawaban benar: *{outcome.quiz.answer}*\n"
+            f"{outcome.quiz.explanation}"
+        )
 
     # ------------------------------------------------------------------ #
     # Supabase helpers                                                    #

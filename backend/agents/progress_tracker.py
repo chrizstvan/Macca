@@ -680,13 +680,13 @@ class ProgressTrackerAgent(BaseAgent):
             status_line = f"Good start! Masih ada {remaining:.1f} kg lagi"
 
         confirmation = (
-            f"✅ Laporan diterima, {volunteer.get('name', '')}!\n"
-            f"📦 {report.kg_collected.value:g} kg dari {report.location} tercatat.\n"
-            f"📊 Progress: {total_reported:g}/{quota:g} kg "
-            f"({pct:.0f}%) — {status_line}\n\n"
-            f"🌍 Dampak hari ini:\n"
-            f"  🍶 {impact['bottles']:,} botol diselamatkan\n"
-            f"  🌿 {impact['co2_kg']:.1f} kg CO₂ dicegah"
+            f"✅ Laporan diterima, {volunteer.get('name', '')}! "
+            f"{report.kg_collected.value:g} kg dari {report.location} tercatat.\n\n"
+            "📊 Dampak laporan kamu hari ini:\n"
+            f"  🍶 {impact['bottles']:,} botol plastik diselamatkan dari lautan\n"
+            f"  🌿 {impact['co2_kg']:.1f} kg emisi CO₂ dicegah\n\n"
+            f"Progress total: {total_reported:g}/{quota:g} kg ({pct:.0f}%)\n"
+            f"{status_line}"
         )
         if source == "google_form":
             confirmation += "\n\n📋 Laporan via form berhasil diterima!"

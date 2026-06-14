@@ -19,6 +19,8 @@ def normalize_phone(phone: str | None) -> str:
         .replace("(", "")
         .replace(")", "")
     )
-    if cleaned.startswith("08"):
+    if cleaned.startswith("0"):
         cleaned = "62" + cleaned[1:]
+    elif cleaned.startswith("8"):
+        cleaned = "62" + cleaned
     return cleaned

@@ -63,6 +63,20 @@ class WhatsAppHandler(BaseChannelHandler):
         if not text:
             return
 
+        # Onboarding flow — runs before the router so first-contact volunteers
+        # get a welcome message and unknown phones get redirected without
+        # burning router/LLM cycles. Fasilitator bypasses the flow entirely.
+        if sender_phone and not self.is_fasilitator(sender_phone):
+            try:
+                proceed_to_router = await self._handle_onboarding(
+                    sender_phone=sender_phone, message=text
+                )
+            except Exception as exc:
+                logger.exception("WhatsApp onboarding flow failed: %s", exc)
+                proceed_to_router = True
+            if not proceed_to_router:
+                return
+
         try:
             reply = await self.router.route(text, ctx)
         except Exception as exc:
@@ -71,6 +85,36 @@ class WhatsAppHandler(BaseChannelHandler):
 
         if reply and sender_phone:
             await self.send_message(sender_phone, reply)
+
+    async def _handle_onboarding(
+        self, *, sender_phone: str, message: str
+    ) -> bool:
+        """Run the inbound-contact use case. Returns whether to continue routing."""
+        from backend.application.use_cases.handle_inbound_contact import (
+            ContinueOnly,
+            ReplyAndContinue,
+            ReplyAndStop,
+        )
+        from backend.infrastructure.composition_root import (
+            build_handle_inbound_contact,
+        )
+
+        outcome = await build_handle_inbound_contact().execute(
+            sender_phone=sender_phone, message=message
+        )
+
+        if isinstance(outcome, ReplyAndStop):
+            await self.send_message(sender_phone, outcome.text)
+            return False
+
+        if isinstance(outcome, ReplyAndContinue):
+            for pre in outcome.pre_messages:
+                await self.send_message(sender_phone, pre)
+            return True
+
+        # ContinueOnly
+        assert isinstance(outcome, ContinueOnly)
+        return True
 
     async def _parse_payload(
         self, request_body: dict[str, Any]
