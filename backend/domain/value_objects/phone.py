@@ -47,8 +47,10 @@ class Phone:
         )
         if not cleaned:
             raise InvalidPhone("empty phone")
-        if cleaned.startswith("08"):
+        if cleaned.startswith("0"):
             cleaned = "62" + cleaned[1:]
+        elif cleaned.startswith("8"):
+            cleaned = "62" + cleaned
         return cls(cleaned)
 
     @classmethod

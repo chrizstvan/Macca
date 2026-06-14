@@ -9,6 +9,10 @@ from telegram import Update
 
 from backend.agents import progress_tracker as progress_tracker_module
 from backend.agents.progress_tracker import ProgressTrackerAgent, cleanup_expired_pending
+from backend.infrastructure.composition_root import (
+    build_send_weekly_plastic_fact,
+    build_send_weekly_quiz,
+)
 from backend.utils.ranking_calculator import RankingCalculator
 from backend.channels.telegram_handler import create_application, init_agents
 from backend.channels.whatsapp_handler import WhatsAppHandler
@@ -48,7 +52,7 @@ async def lifespan(app: FastAPI):
     me = await application.bot.get_me()
     bot_state["username"] = me.username or ""
 
-    # 5. Periodic jobs
+    # 5. Periodic jobs (cron times are system-local; deploy host runs WIB).
     scheduler.add_interval_job(
         cleanup_expired_pending, minutes=5, job_id="cleanup_pending_reports"
     )
@@ -56,6 +60,25 @@ async def lifespan(app: FastAPI):
         RankingCalculator().update_all_rankings,
         "0 23 * * *",
         job_id="daily_ranking_refresh",
+    )
+
+    async def _weekly_plastic_fact_job() -> None:
+        await build_send_weekly_plastic_fact().execute()
+
+    async def _weekly_quiz_job() -> None:
+        await build_send_weekly_quiz().execute()
+
+    # Mon 07:30 WIB — plastic-education broadcast
+    scheduler.add_cron_job(
+        _weekly_plastic_fact_job,
+        "30 7 * * 1",
+        job_id="weekly_plastic_fact",
+    )
+    # Wed 12:00 WIB — quiz broadcast (creates active_quiz row w/ 24h TTL)
+    scheduler.add_cron_job(
+        _weekly_quiz_job,
+        "0 12 * * 3",
+        job_id="weekly_plastic_quiz",
     )
     scheduler.start()
 

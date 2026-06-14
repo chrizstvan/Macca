@@ -17,7 +17,7 @@ from backend.domain.entities.score import Score
 from backend.domain.entities.volunteer import Volunteer
 from backend.domain.value_objects.kg import Kg
 from backend.domain.value_objects.phone import Phone
-from backend.utils.date_utils import parse_iso_date, parse_iso_datetime
+from backend.utils.date_utils import parse_iso_date, parse_iso_datetime  # noqa
 
 
 def _uuid(value: Any) -> UUID:
@@ -41,6 +41,9 @@ def volunteer_from_row(row: dict[str, Any]) -> Volunteer:
         team=list(row.get("team") or []),
         mission_query_count=int(row.get("mission_query_count") or 0),
         mission_query_reset_at=parse_iso_date(row.get("mission_query_reset_at")),
+        whatsapp_connected=bool(row.get("whatsapp_connected", False)),
+        first_contact_at=parse_iso_datetime(row.get("first_contact_at")),
+        last_contact_at=parse_iso_datetime(row.get("last_contact_at")),
     )
 
 

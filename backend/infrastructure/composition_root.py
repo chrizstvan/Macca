@@ -10,11 +10,25 @@ from __future__ import annotations
 from functools import lru_cache
 
 from backend.application.use_cases.brief_mission import BriefMission
+from backend.application.use_cases.handle_inbound_contact import (
+    HandleInboundContact,
+)
+from backend.application.use_cases.handle_quiz_answer import HandleQuizAnswer
+from backend.application.use_cases.send_mission_education_brief import (
+    SendMissionEducationBrief,
+)
+from backend.application.use_cases.send_weekly_fact import SendWeeklyPlasticFact
+from backend.application.use_cases.send_weekly_quiz import SendWeeklyQuiz
 from backend.application.use_cases.submit_report import SubmitReport
 from backend.config import settings
 from backend.database.supabase_client import db
 
 from .llm.anthropic_client import AnthropicLLMClient
+from .notifier.channel_notifier import ChannelNotifier
+from .persistence.supabase_active_quiz_repo import SupabaseActiveQuizRepository
+from .persistence.supabase_unknown_contact_repo import (
+    SupabaseUnknownContactRepository,
+)
 from .persistence.supabase_chat_history_repo import (
     SupabaseChatHistoryRepository,
 )
@@ -60,4 +74,56 @@ def build_brief_mission() -> BriefMission:
     )
 
 
-__all__ = ["build_submit_report", "build_brief_mission"]
+@lru_cache(maxsize=1)
+def _notifier() -> ChannelNotifier:
+    return ChannelNotifier()
+
+
+def build_send_weekly_plastic_fact() -> SendWeeklyPlasticFact:
+    return SendWeeklyPlasticFact(
+        volunteers=SupabaseVolunteerRepository(db),
+        notifier=_notifier(),
+        clock=_clock(),
+    )
+
+
+def build_send_mission_education_brief() -> SendMissionEducationBrief:
+    return SendMissionEducationBrief(
+        volunteers=SupabaseVolunteerRepository(db),
+        notifier=_notifier(),
+    )
+
+
+def build_send_weekly_quiz() -> SendWeeklyQuiz:
+    return SendWeeklyQuiz(
+        volunteers=SupabaseVolunteerRepository(db),
+        quizzes=SupabaseActiveQuizRepository(db),
+        notifier=_notifier(),
+        clock=_clock(),
+    )
+
+
+def build_handle_quiz_answer() -> HandleQuizAnswer:
+    return HandleQuizAnswer(quizzes=SupabaseActiveQuizRepository(db))
+
+
+def build_handle_inbound_contact() -> HandleInboundContact:
+    return HandleInboundContact(
+        volunteers=SupabaseVolunteerRepository(db),
+        missions=SupabaseMissionRepository(db),
+        reports=SupabaseReportRepository(db),
+        unknown_contacts=SupabaseUnknownContactRepository(db),
+        notifier=_notifier(),
+        clock=_clock(),
+    )
+
+
+__all__ = [
+    "build_submit_report",
+    "build_brief_mission",
+    "build_send_weekly_plastic_fact",
+    "build_send_mission_education_brief",
+    "build_send_weekly_quiz",
+    "build_handle_quiz_answer",
+    "build_handle_inbound_contact",
+]

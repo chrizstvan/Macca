@@ -52,7 +52,7 @@ class Settings:
     # touching code).
     claude_default_model: str = "claude-haiku-4-5-20251001"
     claude_complex_model: str = "claude-sonnet-4-6"
-    default_max_tokens: int = 1000
+    default_max_tokens: int = 500
 
     def __new__(cls) -> "Settings":
         if cls._instance is None:

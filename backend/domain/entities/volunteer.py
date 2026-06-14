@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from backend.domain.value_objects.kg import Kg
@@ -24,6 +24,11 @@ class Volunteer:
     # Per-day mission_briefing cap state
     mission_query_count: int = 0
     mission_query_reset_at: date | None = None
+
+    # WhatsApp-onboarding state
+    whatsapp_connected: bool = False
+    first_contact_at: datetime | None = None
+    last_contact_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -58,6 +63,19 @@ class Volunteer:
             self.mission_query_reset_at = today
             return True
         return False
+
+    def mark_contacted(self, now: datetime) -> bool:
+        """Record an inbound contact. Returns True iff this is the first contact.
+
+        First contact flips ``whatsapp_connected`` to True and stamps
+        ``first_contact_at``. Either way ``last_contact_at`` is updated.
+        """
+        is_first = not self.whatsapp_connected
+        if is_first:
+            self.whatsapp_connected = True
+            self.first_contact_at = now
+        self.last_contact_at = now
+        return is_first
 
     def consume_mission_query(self, *, daily_limit: int, today: date) -> bool:
         """Try to spend one slot of the mission_briefing daily quota.

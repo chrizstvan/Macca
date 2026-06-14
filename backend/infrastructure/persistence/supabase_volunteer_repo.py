@@ -54,6 +54,39 @@ class SupabaseVolunteerRepository(VolunteerRepository):
         )
         return volunteer_from_row(rows[0]) if rows else None
 
+    async def list_active(self) -> list[Volunteer]:
+        rows = (
+            self._db.table("volunteers")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+            .data
+            or []
+        )
+        return [volunteer_from_row(r) for r in rows]
+
+    async def list_for_mission(self, mission_id: UUID) -> list[Volunteer]:
+        assignments = (
+            self._db.table("volunteer_missions")
+            .select("volunteer_id")
+            .eq("mission_id", str(mission_id))
+            .execute()
+            .data
+            or []
+        )
+        ids = [a["volunteer_id"] for a in assignments]
+        if not ids:
+            return []
+        rows = (
+            self._db.table("volunteers")
+            .select("*")
+            .in_("id", ids)
+            .execute()
+            .data
+            or []
+        )
+        return [volunteer_from_row(r) for r in rows]
+
     async def find_by_name(self, name_fragment: str) -> list[Volunteer]:
         if not name_fragment:
             return []
@@ -81,6 +114,17 @@ class SupabaseVolunteerRepository(VolunteerRepository):
             "mission_query_reset_at": (
                 volunteer.mission_query_reset_at.isoformat()
                 if volunteer.mission_query_reset_at
+                else None
+            ),
+            "whatsapp_connected": volunteer.whatsapp_connected,
+            "first_contact_at": (
+                volunteer.first_contact_at.isoformat()
+                if volunteer.first_contact_at
+                else None
+            ),
+            "last_contact_at": (
+                volunteer.last_contact_at.isoformat()
+                if volunteer.last_contact_at
                 else None
             ),
         }
