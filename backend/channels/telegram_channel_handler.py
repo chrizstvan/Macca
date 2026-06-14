@@ -1,11 +1,10 @@
-"""BaseChannelHandler-compatible wrapper around the Telegram Bot HTTP API.
+"""Outbound-only wrapper around the Telegram Bot HTTP API.
 
 The richer Telegram bot pipeline lives in :mod:`telegram_handler` (PTB +
-webhook). This module exposes the same surface as
-:class:`backend.channels.whatsapp_handler.WhatsAppHandler` so the channel
-factory in ``base_handler.py`` can return either implementation, and so
-outbound helpers (alerts, broadcasts) can reach Telegram without coupling
-to the PTB Application object.
+webhook); that module owns the *inbound* surface. This module exposes
+just the :class:`OutboundSender` interface so the channel factory can
+return a uniform "thing you can send with" regardless of which channel
+is active.
 
 We deliberately call the Telegram HTTP API directly (via httpx) instead
 of importing PTB here — that keeps this wrapper lightweight and avoids
@@ -17,7 +16,7 @@ from typing import Any
 
 from backend.config import settings
 from backend.utils.http_dispatcher import get_bytes, get_json, post_json
-from .base_handler import BaseChannelHandler
+from .base_handler import OutboundSender
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +27,13 @@ def _api_base() -> str:
     return f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 
 
-class TelegramHandler(BaseChannelHandler):
-    """HTTP-only Telegram handler used by the channel factory."""
+class TelegramHandler(OutboundSender):
+    """Outbound-only Telegram handler used by the channel factory.
 
-    async def handle_incoming(self, request_body: dict[str, Any]) -> None:
-        """No-op: PTB owns the Telegram inbound pipeline at ``/webhook``.
-
-        Kept as a stub so MultiChannelHandler can hold a TelegramHandler
-        instance without the factory caller having to special-case channels.
-        """
-        return None
+    Inbound dispatch is owned by :mod:`telegram_handler` (PTB application).
+    This class doesn't implement :class:`InboundReceiver` because it would
+    only ever return ``None`` — see Pass D notes in ``base_handler``.
+    """
 
     async def send_message(self, to: str, text: str) -> bool:
         return await self._post(

@@ -4,6 +4,7 @@ import logging
 from datetime import date, datetime, timezone
 
 from .base_agent import BaseAgent
+from .intent_registry import register_intent
 from .prompts.mission_briefing import BASE_PROMPT, SOP_SECTION
 from backend.database.supabase_client import db
 from backend.utils.date_utils import parse_iso_date as _shared_parse_iso_date
@@ -25,6 +26,22 @@ LAST_FREE_NOTICE = (
 )
 
 
+@register_intent(
+    name="mission_briefing",
+    description=(
+        "pertanyaan tentang tugas, area, kuota, deadline, SOP, cara pilah "
+        "plastik, apa yang harus dilakukan"
+    ),
+    examples=(
+        "apa tugas saya minggu ini?",
+        "gimana cara bedain plastik pet sama hdpe?",
+        "deadline misi kapan ya?",
+        "area saya di mana?",
+        "kuota saya berapa kg?",
+        "apa yang harus saya lakukan hari ini?",
+        "sop laporan gimana?",
+    ),
+)
 class MissionBriefingAgent(BaseAgent):
     """Briefs volunteers on their mission, area, quota, deadline, progress, and SOP."""
 

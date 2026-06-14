@@ -21,7 +21,11 @@ from .content_creator import ContentCreatorAgent
 from .fasilitator_hub import FasilitatorHubAgent
 from .impact_analyzer import ImpactAnalyzerAgent
 from .mission_briefing import MissionBriefingAgent
-from .progress_tracker import ProgressTrackerAgent, has_pending_report_for_context
+from .progress_tracker import (
+    ProgressTrackerAgent,
+    RANK_KEYWORDS,
+    has_pending_report_for_context,
+)
 from .prompts.router import CLASSIFICATION_PROMPT
 from .volunteer_support import VolunteerSupportAgent, is_allowed_topic
 
@@ -87,6 +91,12 @@ class RouterAgent(BaseAgent):
     async def classify_intent(self, message: str, context: dict) -> str:
         """Pending-report short-circuit + Claude Haiku classification."""
         if has_pending_report_for_context(context):
+            return "progress_tracker"
+
+        # Rank/leaderboard inquiries go straight to progress_tracker — no
+        # need to round-trip Claude for an unambiguous keyword match.
+        lowered = message.lower()
+        if any(kw in lowered for kw in RANK_KEYWORDS):
             return "progress_tracker"
 
         # Cheap off-topic gate: skip Claude classification entirely when the

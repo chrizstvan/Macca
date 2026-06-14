@@ -1,23 +1,52 @@
-"""Progress tracker agent: parses collection reports (chat + Google Form) and answers progress queries."""
+"""Progress tracker agent: parses collection reports (chat + Google Form) and answers progress queries.
+
+The orchestration logic lives here; the heavier-weight pieces have been
+broken out into dedicated services so this file can read top-to-bottom:
+
+* ``services/pending_state`` — multi-turn in-memory state with TTL.
+* ``services/notifications`` — Telegram / WhatsApp DM helpers.
+* ``services/report_repository`` — Supabase reads/writes for ``reports``.
+
+The legacy module-level symbols (``pending_reports``, ``_alert_fasilitator``,
+``cleanup_expired_pending``, ...) are re-exported below so external imports
+(``main.py``, the router, the tests) keep working unchanged.
+"""
 
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from backend.config import settings
 from backend.database.supabase_client import db
 from backend.utils.date_utils import format_hhmm as _shared_format_hhmm
-from backend.utils.http_dispatcher import post_json
 from backend.utils.impact_calculator import ImpactCalculator
 from backend.utils.photo_verifier import PhotoVerifier
 from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
+
 from .base_agent import BaseAgent
+from .intent_registry import register_intent
 from .prompts.progress_tracker import PARSE_PROMPT
+from .services import pending_state, report_repository
+from .services.notifications import alert_fasilitator, notify_volunteer
 
 logger = logging.getLogger(__name__)
 
-PENDING_TTL = timedelta(minutes=10)
+# ------------------------------------------------------------------------- #
+# Pending state — re-exports for back-compat with main.py / router / tests.  #
+# ------------------------------------------------------------------------- #
+
+PendingKey = pending_state.PendingKey
+PENDING_TTL = pending_state.PENDING_TTL
+pending_reports = pending_state.store
+_pending_key = pending_state.pending_key
+_set_pending = pending_state.set_pending
+has_pending_report = pending_state.has_pending
+has_pending_report_for_context = pending_state.has_pending_for_context
+cleanup_expired_pending = pending_state.cleanup_expired
+
+# Notification helpers re-exported (main.py patches/uses these names).
+_alert_fasilitator = alert_fasilitator
+_notify_volunteer = notify_volunteer
 
 INQUIRY_KEYWORDS = (
     "berapa", "sudah berapa", "progress", "total", "sisa",
@@ -26,6 +55,10 @@ INQUIRY_KEYWORDS = (
 )
 
 RANK_KEYWORDS = ("peringkat", "ranking", "rank", "leaderboard")
+
+# Keyword sets for the duplicate-clarification multi-turn flow.
+NEW_REPORT_KEYWORDS = ("tambahan", "baru", "berbeda", "lain", "tambah")
+CORRECTION_KEYWORDS = ("sama", "koreksi", "salah", "ganti", "perbaiki", "betulkan")
 
 KG_FIELDS = ("Berat Plastik (kg)", "Berat (kg)", "Kg", "Berat")
 LOC_FIELDS = ("Lokasi Pengumpulan", "Lokasi", "Area", "Kelurahan")
@@ -42,114 +75,6 @@ ASK_KG_AND_LOCATION_MSG = (
     "Terima kasih fotonya! Boleh kasih tahu beratnya berapa kg "
     "dan lokasinya di mana? 😊"
 )
-
-# ------------------------------------------------------------------------- #
-# Pending state — in-memory, keyed by channel-agnostic sender key            #
-# (str(telegram_id) on Telegram, sender_phone on WhatsApp). 10-minute TTL.   #
-# ------------------------------------------------------------------------- #
-
-PendingKey = int | str
-
-pending_reports: dict[PendingKey, dict] = {}
-
-# Keyword sets for the duplicate-clarification multi-turn flow.
-NEW_REPORT_KEYWORDS = ("tambahan", "baru", "berbeda", "lain", "tambah")
-CORRECTION_KEYWORDS = ("sama", "koreksi", "salah", "ganti", "perbaiki", "betulkan")
-
-
-def _pending_key(context: dict | None) -> PendingKey | None:
-    """Return a channel-stable key for pending state lookup."""
-    if not context:
-        return None
-    telegram_id = context.get("telegram_id")
-    if telegram_id:
-        return telegram_id
-    sender_phone = context.get("sender_phone")
-    if sender_phone:
-        return str(sender_phone)
-    return None
-
-
-def _set_pending(
-    key: PendingKey | None,
-    step: str,
-    data: dict,
-    existing_report_id: str | None = None,
-) -> None:
-    if key is None:
-        return
-    pending_reports[key] = {
-        "step": step,  # waiting_kg | waiting_location | waiting_confirmation
-        "data": data,
-        "existing_report_id": existing_report_id,
-        "expires_at": datetime.now(timezone.utc) + PENDING_TTL,
-    }
-
-
-def has_pending_report(key: PendingKey | None) -> bool:
-    """True if there is an unexpired pending report state for this key."""
-    if key is None:
-        return False
-    entry = pending_reports.get(key)
-    if entry is None:
-        return False
-    if entry["expires_at"] < datetime.now(timezone.utc):
-        del pending_reports[key]
-        return False
-    return True
-
-
-def has_pending_report_for_context(context: dict | None) -> bool:
-    """Channel-aware wrapper used by the router."""
-    return has_pending_report(_pending_key(context))
-
-
-async def cleanup_expired_pending() -> None:
-    """Scheduler job: drop expired pending states (runs every 5 minutes)."""
-    now = datetime.now(timezone.utc)
-    expired = [key for key, entry in pending_reports.items() if entry["expires_at"] < now]
-    for key in expired:
-        del pending_reports[key]
-    if expired:
-        logger.info("Cleaned up %d expired pending report state(s)", len(expired))
-
-
-async def _alert_fasilitator(text: str) -> None:
-    """DM the fasilitator via the Telegram HTTP API (works outside PTB handlers too)."""
-    if not settings.fasilitator_telegram_id or not settings.telegram_bot_token:
-        return
-    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    await post_json(
-        url,
-        {"chat_id": settings.fasilitator_telegram_id, "text": text},
-        log_label="progress.alert_fasilitator",
-    )
-
-
-async def _notify_volunteer(volunteer: dict, text: str) -> None:
-    """DM a target volunteer on whichever channel they're registered with.
-
-    Used by fasilitator-relay reports so the volunteer sees their credit
-    even though the fasilitator was the one talking to the bot.
-    """
-    phone = (volunteer or {}).get("phone")
-    if phone:
-        try:
-            from backend.channels.whatsapp_handler import WhatsAppHandler
-
-            await WhatsAppHandler().send_message(phone, text)
-            return
-        except Exception as exc:
-            logger.error("Failed to notify volunteer on WhatsApp: %s", exc)
-
-    telegram_id = (volunteer or {}).get("telegram_id")
-    if telegram_id and settings.telegram_bot_token:
-        url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-        await post_json(
-            url,
-            {"chat_id": telegram_id, "text": text},
-            log_label="progress.notify_volunteer",
-        )
 
 
 def _get_field(data: dict, candidates: tuple[str, ...]) -> str | None:
@@ -299,7 +224,7 @@ class ProgressTrackerAgent(BaseAgent):
         update: dict = {"kg_collected": data["kg"], "location": data["location"]}
         if data.get("photo_url"):
             update["photo_url"] = data["photo_url"]
-        db.table("reports").update(update).eq("id", report_id).execute()
+        report_repository.update_report(report_id, update)
 
         volunteer = context.get("volunteer") or {}
         mission = context.get("mission") or {}
@@ -495,7 +420,7 @@ class ProgressTrackerAgent(BaseAgent):
         report_extra = dict(extra_data or {})
         report_extra["photo_verification"] = photo_result
 
-        db.table("reports").insert(
+        report_repository.insert_report(
             {
                 "volunteer_id": volunteer["id"],
                 "mission_id": mission["id"],
@@ -510,9 +435,9 @@ class ProgressTrackerAgent(BaseAgent):
                 "verified": verified,
                 "is_test": is_test,
             }
-        ).execute()
+        )
 
-        total_reported = self._sync_reported_kg(volunteer["id"], mission["id"])
+        total_reported = report_repository.sync_reported_kg(volunteer["id"], mission["id"])
 
         # Fire-and-forget impact-score recompute so the reply isn't blocked.
         try:
@@ -768,48 +693,8 @@ class ProgressTrackerAgent(BaseAgent):
 
     _get_active_mission = staticmethod(_shared_get_active_mission)
 
-    @staticmethod
-    def _find_duplicate_today(volunteer_id: str, mission_id: str, kg: float) -> dict | None:
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        rows = (
-            db.table("reports")
-            .select("id, kg_collected")
-            .eq("volunteer_id", volunteer_id)
-            .eq("mission_id", mission_id)
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        return next(
-            (r for r in rows if abs(float(r["kg_collected"]) - kg) < 1), None
-        )
-
-    @staticmethod
-    def _find_latest_today(volunteer_id: str, mission_id: str) -> dict | None:
-        """Most recent report from this volunteer for this mission today, or None."""
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        rows = (
-            db.table("reports")
-            .select("id, kg_collected, location, reported_at")
-            .eq("volunteer_id", volunteer_id)
-            .eq("mission_id", mission_id)
-            .gte("reported_at", today_start)
-            .order("reported_at", desc=True)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        return rows[0] if rows else None
+    _find_duplicate_today = staticmethod(report_repository.find_duplicate_today)
+    _find_latest_today = staticmethod(report_repository.find_latest_today)
 
     @staticmethod
     def _classify_duplicate(
@@ -852,28 +737,4 @@ class ProgressTrackerAgent(BaseAgent):
 
     _format_local_time = staticmethod(_shared_format_hhmm)
 
-    @staticmethod
-    def _sync_reported_kg(volunteer_id: str, mission_id: str) -> float:
-        """Recompute the volunteer's total for this mission and mirror it on volunteer_missions."""
-        rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .eq("volunteer_id", volunteer_id)
-            .eq("mission_id", mission_id)
-            .execute()
-            .data
-            or []
-        )
-        total = sum(float(r["kg_collected"]) for r in rows)
-        try:
-            (
-                db.table("volunteer_missions")
-                .update({"reported_kg": total})
-                .eq("volunteer_id", volunteer_id)
-                .eq("mission_id", mission_id)
-                .execute()
-            )
-        except Exception as exc:
-            # Column requires the Part-7 migration; don't fail the report if it's missing
-            logger.warning("Could not update volunteer_missions.reported_kg: %s", exc)
-        return total
+    _sync_reported_kg = staticmethod(report_repository.sync_reported_kg)

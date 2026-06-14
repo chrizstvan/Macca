@@ -1,10 +1,21 @@
-"""Abstract channel-handler interface + runtime factory.
+"""Channel-handler interfaces + the runtime factory.
 
-Every concrete channel handler (Telegram, WhatsApp, ...) implements the
-same surface so the rest of the application can stay channel-agnostic.
-A ``get_active_handler()`` factory reads ``settings.active_channel`` and
-returns the right instance — or a ``MultiChannelHandler`` when the
-operator wants both wires active at once.
+Pass D split: the historical ``BaseChannelHandler`` lumped inbound and
+outbound responsibilities into a single ABC. Concrete handlers paid for
+both even when they only needed one (e.g. ``TelegramHandler``'s
+``handle_incoming`` was a hard-coded ``return None``). The interface is
+now decomposed into two cohesive protocols:
+
+* :class:`InboundReceiver` — the bot's parsing/dispatch surface for an
+  incoming webhook payload.
+* :class:`OutboundSender` — the bot's outbound surface (DMs, media,
+  buttons, alerts, identity check).
+
+``BaseChannelHandler`` is preserved as the union of both so existing
+imports (``WhatsAppHandler(BaseChannelHandler)``) keep working without
+churn. New code that only needs to *send* (factory consumers, ad-hoc
+notification helpers) can take an :class:`OutboundSender` parameter and
+accept either handler — or the multi-channel fan-out wrapper.
 """
 
 from abc import ABC, abstractmethod
@@ -14,8 +25,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-class BaseChannelHandler(ABC):
-    """Interface every channel handler must implement."""
+class InboundReceiver(ABC):
+    """A channel handler that consumes webhook payloads."""
 
     @abstractmethod
     async def handle_incoming(self, request_body: dict[str, Any]) -> None:
@@ -25,6 +36,10 @@ class BaseChannelHandler(ABC):
         back over the same channel. Errors should be caught and logged so a
         single bad event never blocks the webhook ack.
         """
+
+
+class OutboundSender(ABC):
+    """A channel handler that pushes messages out to recipients."""
 
     @abstractmethod
     async def send_message(self, to: str, text: str) -> bool:
@@ -55,24 +70,29 @@ class BaseChannelHandler(ABC):
         """True if ``sender_id`` belongs to the fasilitator on this channel."""
 
 
-class MultiChannelHandler(BaseChannelHandler):
-    """Fan-out wrapper that forwards outbound calls to several handlers.
+class BaseChannelHandler(InboundReceiver, OutboundSender, ABC):
+    """Union of both interfaces — used by handlers that genuinely do both.
 
-    Inbound (``handle_incoming``) is *not* fanned out — the caller already
-    knows which channel posted the webhook, so it should pick the right
-    handler directly. The wrapper raises if ``handle_incoming`` is called
-    here so misuse fails loudly.
+    Kept for back-compat with existing concrete handlers and external
+    imports. New code that only needs one half should depend on the
+    narrower interface directly.
     """
 
-    def __init__(self, handlers: list[BaseChannelHandler]) -> None:
+
+class MultiChannelHandler(OutboundSender):
+    """Fan-out wrapper that forwards outbound calls to several handlers.
+
+    Inbound dispatch is *not* fanned out — the caller already knows which
+    channel posted the webhook, so it should pick the right handler
+    directly. That's why this class implements ``OutboundSender`` only:
+    trying to receive on a multi-channel composite is a category error
+    we'd rather catch at type-check time than at runtime.
+    """
+
+    def __init__(self, handlers: list[OutboundSender]) -> None:
         if not handlers:
             raise ValueError("MultiChannelHandler requires at least one handler")
         self.handlers = handlers
-
-    async def handle_incoming(self, request_body: dict[str, Any]) -> None:
-        raise NotImplementedError(
-            "Route inbound webhooks through a specific handler, not MultiChannelHandler"
-        )
 
     async def send_message(self, to: str, text: str) -> bool:
         results = [await h.send_message(to, text) for h in self.handlers]
@@ -105,11 +125,16 @@ class MultiChannelHandler(BaseChannelHandler):
         return any(h.is_fasilitator(sender_id) for h in self.handlers)
 
 
-def get_active_handler() -> BaseChannelHandler:
-    """Return the channel handler matching ``settings.active_channel``.
+def get_active_handler() -> OutboundSender:
+    """Return the outbound handler matching ``settings.active_channel``.
+
+    Returns :class:`OutboundSender` because the factory's only stable
+    contract is the ability to send messages — callers that need inbound
+    dispatch should instantiate the concrete handler at the webhook entry
+    point instead.
 
     Lazy imports avoid a circular dependency between this module and the
-    concrete handlers (which import ``BaseChannelHandler``).
+    concrete handlers (which import ``BaseChannelHandler`` from here).
     """
     from backend.config import settings
 

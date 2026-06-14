@@ -13,7 +13,7 @@ ALLOWED_TOPICS = (
     "program", "misi", "tugas", "challenge",
     "plastik", "daur ulang", "lingkungan", "sampah",
     "karbon", "co2", "jejak karbon", "emisi",
-    "submit", "laporan", "progress",
+    "submit", "laporan", "progress", "peringkat", "ranking",
     "motivasi", "semangat", "keluhan program",
 )
 
