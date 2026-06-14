@@ -1,10 +1,25 @@
 """Impact analyzer agent that quantifies and narrates mission outcomes."""
 
 from .base_agent import BaseAgent, COMPLEX_MODEL
+from .intent_registry import register_intent
 from .prompts.impact_analyzer import SYSTEM_PROMPT
 from backend.database.supabase_client import db
 
 
+@register_intent(
+    name="impact_analyzer",
+    description=(
+        "pertanyaan tentang dampak total program, statistik keseluruhan, "
+        "laporan untuk sponsor/donor"
+    ),
+    examples=(
+        "total program berapa kg sejauh ini?",
+        "sudah berapa total yang terkumpul?",
+        "berapa volunteer aktif sekarang?",
+        "buat ringkasan dampak program buat sponsor",
+        "rekap statistik mingguan buat laporan donor",
+    ),
+)
 class ImpactAnalyzerAgent(BaseAgent):
     """Aggregates report data and produces quantified impact summaries."""
 

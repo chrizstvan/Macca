@@ -1,26 +1,63 @@
-"""Progress tracker agent: parses collection reports (chat + Google Form) and answers progress queries."""
+"""Progress tracker agent: parses collection reports (chat + Google Form) and answers progress queries.
+
+The orchestration logic lives here; the heavier-weight pieces have been
+broken out into dedicated services so this file can read top-to-bottom:
+
+* ``services/pending_state`` — multi-turn in-memory state with TTL.
+* ``services/notifications`` — Telegram / WhatsApp DM helpers.
+* ``services/report_repository`` — Supabase reads/writes for ``reports``.
+
+The legacy module-level symbols (``pending_reports``, ``_alert_fasilitator``,
+``cleanup_expired_pending``, ...) are re-exported below so external imports
+(``main.py``, the router, the tests) keep working unchanged.
+"""
 
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import httpx
-
-from backend.config import settings
 from backend.database.supabase_client import db
+from backend.utils.date_utils import format_hhmm as _shared_format_hhmm
 from backend.utils.impact_calculator import ImpactCalculator
+from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
+
 from .base_agent import BaseAgent
+from .intent_registry import register_intent
 from .prompts.progress_tracker import PARSE_PROMPT
+from .services import pending_state, report_repository
+from .services.notifications import alert_fasilitator, notify_volunteer
 
 logger = logging.getLogger(__name__)
 
-PENDING_TTL = timedelta(minutes=10)
+# ------------------------------------------------------------------------- #
+# Pending state — re-exports for back-compat with main.py / router / tests.  #
+# ------------------------------------------------------------------------- #
+
+PendingKey = pending_state.PendingKey
+PENDING_TTL = pending_state.PENDING_TTL
+pending_reports = pending_state.store
+_pending_key = pending_state.pending_key
+_set_pending = pending_state.set_pending
+has_pending_report = pending_state.has_pending
+has_pending_report_for_context = pending_state.has_pending_for_context
+cleanup_expired_pending = pending_state.cleanup_expired
+
+# Notification helpers re-exported (main.py patches/uses these names).
+_alert_fasilitator = alert_fasilitator
+_notify_volunteer = notify_volunteer
 
 INQUIRY_KEYWORDS = (
     "berapa", "sudah berapa", "progress", "total", "sisa",
     "kuota", "pencapaian", "sudah sampai mana",
+    "peringkat", "ranking", "rank", "leaderboard",
 )
+
+RANK_KEYWORDS = ("peringkat", "ranking", "rank", "leaderboard")
+
+# Keyword sets for the duplicate-clarification multi-turn flow.
+NEW_REPORT_KEYWORDS = ("tambahan", "baru", "berbeda", "lain", "tambah")
+CORRECTION_KEYWORDS = ("sama", "koreksi", "salah", "ganti", "perbaiki", "betulkan")
 
 KG_FIELDS = ("Berat Plastik (kg)", "Berat (kg)", "Kg", "Berat")
 LOC_FIELDS = ("Lokasi Pengumpulan", "Lokasi", "Area", "Kelurahan")
@@ -38,61 +75,6 @@ ASK_KG_AND_LOCATION_MSG = (
     "dan lokasinya di mana? 😊"
 )
 
-# ------------------------------------------------------------------------- #
-# Pending state (Part 5) — in-memory, keyed by telegram_id, 10-minute TTL    #
-# ------------------------------------------------------------------------- #
-
-pending_reports: dict[int, dict] = {}
-
-
-def _set_pending(
-    telegram_id: int | None,
-    step: str,
-    data: dict,
-    existing_report_id: str | None = None,
-) -> None:
-    if telegram_id is None:
-        return
-    pending_reports[telegram_id] = {
-        "step": step,  # waiting_kg | waiting_location | waiting_confirmation
-        "data": data,
-        "existing_report_id": existing_report_id,
-        "expires_at": datetime.now(timezone.utc) + PENDING_TTL,
-    }
-
-
-def has_pending_report(telegram_id: int | None) -> bool:
-    """True if the volunteer has an unexpired pending report state."""
-    entry = pending_reports.get(telegram_id)
-    if entry is None:
-        return False
-    if entry["expires_at"] < datetime.now(timezone.utc):
-        del pending_reports[telegram_id]
-        return False
-    return True
-
-
-async def cleanup_expired_pending() -> None:
-    """Scheduler job: drop expired pending states (runs every 5 minutes)."""
-    now = datetime.now(timezone.utc)
-    expired = [key for key, entry in pending_reports.items() if entry["expires_at"] < now]
-    for key in expired:
-        del pending_reports[key]
-    if expired:
-        logger.info("Cleaned up %d expired pending report state(s)", len(expired))
-
-
-async def _alert_fasilitator(text: str) -> None:
-    """DM the fasilitator via the Telegram HTTP API (works outside PTB handlers too)."""
-    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            await client.post(
-                url, json={"chat_id": settings.fasilitator_telegram_id, "text": text}
-            )
-    except Exception as exc:
-        logger.error("Failed to alert fasilitator: %s", exc)
-
 
 def _get_field(data: dict, candidates: tuple[str, ...]) -> str | None:
     for key in candidates:
@@ -101,6 +83,21 @@ def _get_field(data: dict, candidates: tuple[str, ...]) -> str | None:
     return None
 
 
+@register_intent(
+    name="progress_tracker",
+    description=(
+        "laporan plastik terkumpul (mengandung angka + kg/kilo + lokasi), "
+        "pertanyaan tentang progress atau sisa target pribadi"
+    ),
+    examples=(
+        "laporan 18 kg menteng",
+        "udah nih 25 kilo di cikini [foto]",
+        "saya sudah kumpul 5 kg di senen",
+        "laporan foto",
+        "progress saya udah berapa kg?",
+        "kurang berapa lagi biar capai target?",
+    ),
+)
 class ProgressTrackerAgent(BaseAgent):
     """Turns chat messages and Google Form submissions into rows in the reports table."""
 
@@ -128,8 +125,10 @@ class ProgressTrackerAgent(BaseAgent):
             return await self.process_form_submission(context["form_data"], context)
 
         telegram_id = context.get("telegram_id")
-        if telegram_id and has_pending_report(telegram_id):
+        if has_pending_report_for_context(context):
             reply = await self._resume_pending(message, context)
+        elif any(kw in message.lower() for kw in RANK_KEYWORDS):
+            reply = await self.process_rank_inquiry(context)
         elif self.is_progress_inquiry(message):
             reply = await self.process_progress_inquiry(context)
         else:
@@ -150,13 +149,13 @@ class ProgressTrackerAgent(BaseAgent):
     # --------------------------------------------------------------------- #
 
     async def process_chat_report(self, message: str, context: dict) -> str:
-        telegram_id = context.get("telegram_id")
+        key = _pending_key(context)
         photo_url = context.get("photo_url")
         kg, location = await self._parse_report(message)
 
         if kg is None and photo_url:
             _set_pending(
-                telegram_id,
+                key,
                 "waiting_kg",
                 {"kg": None, "location": location, "photo_url": photo_url},
             )
@@ -165,7 +164,7 @@ class ProgressTrackerAgent(BaseAgent):
             return ASK_FORMAT_MSG
         if location is None:
             _set_pending(
-                telegram_id,
+                key,
                 "waiting_location",
                 {"kg": kg, "location": None, "photo_url": photo_url},
             )
@@ -173,29 +172,42 @@ class ProgressTrackerAgent(BaseAgent):
 
         return await self._finalize(
             context, kg, location, photo_url, raw_message=message,
-            source=context.get("channel", "telegram"),
+            source=context.get("source") or context.get("channel", "telegram"),
         )
 
     async def _resume_pending(self, message: str, context: dict) -> str:
         """Part 5 — complete (or correct) a report using the saved pending state."""
-        telegram_id = context["telegram_id"]
-        entry = pending_reports.pop(telegram_id)
+        key = _pending_key(context)
+        entry = pending_reports.pop(key)
         data = entry["data"]
 
         if entry["step"] == "waiting_confirmation":
             choice = message.strip().lower()
-            if choice.startswith("a"):
-                return await self._finalize(
+            if any(kw in choice for kw in NEW_REPORT_KEYWORDS):
+                confirmation = await self._finalize(
                     context, data["kg"], data["location"], data.get("photo_url"),
                     raw_message=data.get("raw_message", message),
                     source=data.get("source", "telegram"),
                     extra_data=data.get("extra_data"),
                     skip_duplicate_check=True,
                 )
-            if choice.startswith("b"):
+                volunteer = context.get("volunteer") or {}
+                mission = context.get("mission") or {}
+                total = (
+                    self._sync_reported_kg(volunteer["id"], mission["id"])
+                    if volunteer.get("id") and mission.get("id")
+                    else 0
+                )
+                return f"✅ Ditambahkan! Total sekarang {total:g} kg\n\n" + confirmation
+            if any(kw in choice for kw in CORRECTION_KEYWORDS):
                 return self._correct_report(entry["existing_report_id"], data, context)
-            pending_reports[telegram_id] = entry  # neither A nor B — ask again
-            return "Balas A (tambahan baru) atau B (koreksi laporan tadi) ya 😊"
+            # Neither keyword family matched — restore state and ask again
+            # with explicit instructions.
+            pending_reports[key] = entry
+            return (
+                "Maaf, bisa diperjelas? Ketik 'tambahan' kalau ini laporan baru, "
+                "atau 'koreksi' kalau mau ganti laporan tadi."
+            )
 
         # waiting_kg / waiting_location: parse the new message and merge
         kg, location = await self._parse_report(message)
@@ -205,32 +217,38 @@ class ProgressTrackerAgent(BaseAgent):
 
         if kg is None:
             _set_pending(
-                telegram_id, "waiting_kg",
+                key, "waiting_kg",
                 {"kg": None, "location": location, "photo_url": photo_url},
             )
             return "Beratnya berapa kg ya? Contoh: '18 kg' ⚖️"
         if location is None:
             _set_pending(
-                telegram_id, "waiting_location",
+                key, "waiting_location",
                 {"kg": kg, "location": None, "photo_url": photo_url},
             )
             return f"Berat {kg:g} kg tercatat! Lokasinya di mana ya? 📍"
 
         return await self._finalize(
             context, kg, location, photo_url, raw_message=message,
-            source=context.get("channel", "telegram"),
+            source=context.get("source") or context.get("channel", "telegram"),
         )
 
     def _correct_report(self, report_id: str, data: dict, context: dict) -> str:
+        old_kg = data.get("existing_kg")
         update: dict = {"kg_collected": data["kg"], "location": data["location"]}
         if data.get("photo_url"):
             update["photo_url"] = data["photo_url"]
-        db.table("reports").update(update).eq("id", report_id).execute()
+        report_repository.update_report(report_id, update)
 
         volunteer = context.get("volunteer") or {}
         mission = context.get("mission") or {}
         if volunteer.get("id") and mission.get("id"):
             self._sync_reported_kg(volunteer["id"], mission["id"])
+        if old_kg is not None:
+            return (
+                f"✅ Laporan dikoreksi dari {float(old_kg):g} kg "
+                f"menjadi {float(data['kg']):g} kg"
+            )
         return (
             f"Laporan tadi sudah dikoreksi menjadi "
             f"{float(data['kg']):g} kg di {data['location']} ✅"
@@ -307,129 +325,55 @@ class ProgressTrackerAgent(BaseAgent):
             )
             return "Tidak ada misi aktif untuk volunteer ini."
 
-        return await self.validate_and_save(
-            volunteer, mission, kg, location, photo_url, raw_message,
-            source="google_form", extra_data=extra_data,
+        # Form submissions go through the same use case as chat reports.
+        # context["volunteer"]/["mission"] are already populated above so
+        # ``_finalize`` won't re-fetch them.
+        context["volunteer"] = volunteer
+        context["mission"] = mission
+        return await self._finalize(
+            context,
+            kg,
+            location,
+            photo_url,
+            raw_message=raw_message,
+            source="google_form",
+            extra_data=extra_data,
         )
-
-    # --------------------------------------------------------------------- #
-    # Part 4 — validate and save (shared)                                     #
-    # --------------------------------------------------------------------- #
-
-    async def validate_and_save(
-        self,
-        volunteer: dict,
-        mission: dict,
-        kg: float,
-        location: str,
-        photo_url: str | None,
-        raw_message: str,
-        source: str,
-        extra_data: dict | None = None,
-        skip_duplicate_check: bool = False,
-    ) -> str:
-        # Check 1 — kg range
-        if kg <= 0:
-            return "Berat harus lebih dari 0 kg"
-        if kg > 999:
-            return "Berat terlalu besar, mohon periksa kembali"
-
-        # Check 2 — quota threshold flag
-        flag_reasons = []
-        quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
-        if quota and kg > quota * 2:
-            flag_reasons.append(f"Berat {kg:g}kg melebihi 2x kuota ({quota:g}kg)")
-
-        # Check 3 — location vs assigned area (substring match either way)
-        assigned_area = (volunteer.get("area") or "").lower()
-        reported_location = location.lower()
-        if (
-            assigned_area
-            and assigned_area not in reported_location
-            and reported_location not in assigned_area
-        ):
-            flag_reasons.append(
-                f"Lokasi '{location}' di luar area tugas '{volunteer['area']}'"
-            )
-
-        # Check 4 — similar-weight duplicate today
-        if not skip_duplicate_check:
-            duplicate = self._find_duplicate_today(volunteer["id"], mission["id"], kg)
-            if duplicate:
-                _set_pending(
-                    volunteer.get("telegram_id"),
-                    "waiting_confirmation",
-                    {
-                        "kg": kg, "location": location, "photo_url": photo_url,
-                        "raw_message": raw_message, "source": source,
-                        "extra_data": extra_data,
-                    },
-                    existing_report_id=duplicate["id"],
-                )
-                return (
-                    f"Kamu sudah pernah lapor {float(duplicate['kg_collected']):g} kg tadi.\n"
-                    "Ini laporan tambahan atau koreksi? Balas:\n"
-                    "A) Tambahan baru\n"
-                    "B) Koreksi laporan tadi"
-                )
-
-        is_flagged = bool(flag_reasons)
-        flag_reason = " | ".join(flag_reasons) if flag_reasons else None
-
-        db.table("reports").insert(
-            {
-                "volunteer_id": volunteer["id"],
-                "mission_id": mission["id"],
-                "kg_collected": kg,
-                "location": location,
-                "photo_url": photo_url,
-                "raw_message": raw_message,
-                "source": source,
-                "extra_data": extra_data or {},
-                "is_flagged": is_flagged,
-                "flag_reason": flag_reason,
-                "verified": False,
-            }
-        ).execute()
-
-        total_reported = self._sync_reported_kg(volunteer["id"], mission["id"])
-
-        if is_flagged:
-            await _alert_fasilitator(
-                f"🚩 Laporan perlu dicek dari {volunteer['name']}:\n"
-                f"📦 {kg:g} kg di {location} (via {source})\n"
-                f"⚠️ Alasan: {flag_reason}\n"
-                "Cek di dashboard → Reports → Perlu Dicek"
-            )
-
-        impact = ImpactCalculator.format_impact_summary(kg)
-        remaining = max(quota - total_reported, 0)
-        pct = (total_reported / quota * 100) if quota else 0
-
-        if pct >= 100:
-            status_line = "🎉 SELESAI! Kamu sudah memenuhi kuota misimu!"
-        elif pct >= 75:
-            status_line = f"Hampir selesai! Sisa {remaining:.1f} kg lagi 💪"
-        elif pct >= 50:
-            status_line = f"Sudah separuh jalan! Sisa {remaining:.1f} kg"
-        else:
-            status_line = f"Good start! Masih ada {remaining:.1f} kg lagi"
-
-        confirmation = (
-            f"✅ Laporan diterima, {volunteer['name']}!\n"
-            f"📦 {kg:g} kg dari {location} tercatat.\n"
-            f"📊 Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%) — {status_line}\n\n"
-            f"🌍 Dampak hari ini:\n"
-            f"  🍶 {impact['bottles']:,} botol diselamatkan\n"
-            f"  🌿 {impact['co2_kg']:.1f} kg CO₂ dicegah"
-        )
-        if source == "google_form":
-            confirmation += "\n\n📋 Laporan via form berhasil diterima!"
-        return confirmation
 
     # --------------------------------------------------------------------- #
     # Part 6 — progress inquiry                                               #
     # --------------------------------------------------------------------- #
+
+    async def process_rank_inquiry(self, context: dict) -> str:
+        """Personal rank line ('Kamu di peringkat ke-7 dari 50 volunteer! 🏆')."""
+        from backend.utils.ranking_calculator import RankingCalculator
+
+        volunteer = context.get("volunteer") or await self.get_volunteer_flexible(context)
+        if volunteer is None:
+            return (
+                "Kamu belum terdaftar sebagai volunteer. "
+                "Silakan DM bot ini dan ketik /start untuk registrasi ya!"
+            )
+
+        calc = RankingCalculator()
+        # Ensure the volunteer's own score is fresh — cheap enough inline.
+        await calc.refresh_volunteer(volunteer["id"])
+        info = await calc.get_personal_rank(volunteer["id"])
+        if info is None or not info.get("rank"):
+            return (
+                "Peringkat kamu belum tersedia. Tunggu update ranking malam ini "
+                "ya — biasanya jam 23:00 🤝"
+            )
+
+        lines = [
+            f"Kamu di peringkat ke-{info['rank']} dari {info['total_count']} volunteer! 🏆",
+            f"Skor total: {info['total_score']:g} "
+            f"(impact: {info['kg_collected']:g} kg, "
+            f"quiz: {info['quiz_correct_count']} benar)",
+        ]
+        if info.get("ahead_name"):
+            lines.append(f"Kamu hampir menyusul {info['ahead_name']} di peringkat {info['rank'] - 1}!")
+        return "\n".join(lines)
 
     async def process_progress_inquiry(self, context: dict) -> str:
         volunteer = context.get("volunteer")
@@ -529,7 +473,7 @@ class ProgressTrackerAgent(BaseAgent):
         extra_data: dict | None = None,
         skip_duplicate_check: bool = False,
     ) -> str:
-        """Resolve volunteer + mission from context, then validate_and_save."""
+        """Resolve volunteer + mission from context, then route via SubmitReport."""
         volunteer = context.get("volunteer")
         if volunteer is None and context.get("telegram_id"):
             volunteer = await self.get_volunteer(context["telegram_id"])
@@ -544,10 +488,218 @@ class ProgressTrackerAgent(BaseAgent):
                 "Belum ada misi aktif, jadi laporanmu belum bisa dicatat. "
                 "Hubungi fasilitator ya 🙏"
             )
-        return await self.validate_and_save(
-            volunteer, mission, kg, location, photo_url, raw_message,
-            source, extra_data, skip_duplicate_check,
+
+        return await self._submit_via_use_case(
+            context=context,
+            volunteer=volunteer,
+            mission=mission,
+            kg=kg,
+            location=location,
+            photo_url=photo_url,
+            raw_message=raw_message,
+            source=source,
+            extra_data=extra_data,
+            skip_duplicate_check=skip_duplicate_check,
         )
+
+    # ------------------------------------------------------------------ #
+    # SubmitReport use-case bridge                                        #
+    # ------------------------------------------------------------------ #
+
+    async def _submit_via_use_case(
+        self,
+        *,
+        context: dict,
+        volunteer: dict,
+        mission: dict,
+        kg: float,
+        location: str,
+        photo_url: str | None,
+        raw_message: str,
+        source: str,
+        extra_data: dict | None,
+        skip_duplicate_check: bool,
+    ) -> str:
+        """Route the save through the SubmitReport use case + translate outcome."""
+        # Lazy import keeps composition root out of the agent's startup path.
+        from uuid import UUID
+
+        from backend.application.use_cases.submit_report import (
+            DuplicateClarificationNeeded,
+            NeedsPhoto,
+            PhotoRejected,
+            Saved,
+        )
+        from backend.domain.errors import InvalidKg
+        from backend.infrastructure.composition_root import build_submit_report
+
+        use_case = build_submit_report()
+        try:
+            outcome = await use_case.execute(
+                volunteer_id=UUID(str(volunteer["id"])),
+                kg_value=kg,
+                location=location,
+                source=source,
+                photo_url=photo_url,
+                is_test=bool((context or {}).get("is_test_mode")),
+                skip_duplicate_check=skip_duplicate_check,
+                extra_data=extra_data,
+            )
+        except InvalidKg as exc:
+            return str(exc)
+
+        if isinstance(outcome, NeedsPhoto):
+            return outcome.message
+
+        if isinstance(outcome, PhotoRejected):
+            return (
+                f"Hai {volunteer.get('name', '')}! "
+                "Foto yang dikirim sepertinya bukan foto plastik. "
+                f"{outcome.reason}\n\n"
+                "Boleh kirim ulang foto plastik + timbangan ya? 📸"
+            )
+
+        if isinstance(outcome, DuplicateClarificationNeeded):
+            return self._handle_duplicate_clarification(
+                outcome=outcome,
+                kg=kg,
+                location=location,
+                photo_url=photo_url,
+                raw_message=raw_message,
+                source=source,
+                extra_data=extra_data,
+                context=context,
+            )
+
+        assert isinstance(outcome, Saved)
+        return await self._after_save(
+            saved=outcome,
+            volunteer=volunteer,
+            mission=mission,
+            source=source,
+        )
+
+    def _handle_duplicate_clarification(
+        self,
+        *,
+        outcome,
+        kg: float,
+        location: str,
+        photo_url: str | None,
+        raw_message: str,
+        source: str,
+        extra_data: dict | None,
+        context: dict,
+    ) -> str:
+        """Park pending state + render the spec-exact ask message."""
+        existing = outcome.existing
+        existing_kg = existing.kg_collected.value
+        existing_loc = existing.location
+        time_str = self._format_local_time(
+            existing.reported_at.isoformat() if existing.reported_at else None
+        )
+
+        if outcome.verdict.value == "clear_duplicate":
+            ask = (
+                f"Kamu tadi sudah submit {existing_kg:g} kg dari "
+                f"{existing_loc} pada pukul {time_str}. "
+                "Ini laporan tambahan atau sama?"
+            )
+        else:
+            ask = (
+                f"Tadi kamu sudah lapor {existing_kg:g} kg pada {time_str}. "
+                f"Laporan baru ini {kg:g} kg — ini tambahan atau koreksi "
+                "laporan tadi?"
+            )
+
+        pending_key = _pending_key(context) or (
+            (context.get("volunteer") or {}).get("telegram_id")
+        )
+        _set_pending(
+            pending_key,
+            "waiting_confirmation",
+            {
+                "kg": kg,
+                "location": location,
+                "photo_url": photo_url,
+                "raw_message": raw_message,
+                "source": source,
+                "extra_data": extra_data,
+                "existing_kg": existing_kg,
+            },
+            existing_report_id=str(existing.id),
+        )
+        return ask
+
+    async def _after_save(
+        self,
+        *,
+        saved,
+        volunteer: dict,
+        mission: dict,
+        source: str,
+    ) -> str:
+        """Post-save side effects + confirmation text (matches legacy format)."""
+        import asyncio as _asyncio
+
+        report = saved.report
+        total_reported = saved.total_kg
+        quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
+
+        # Fasilitator alert on flagged reports
+        if report.is_flagged:
+            await _alert_fasilitator(
+                f"🚩 Laporan perlu dicek dari {volunteer.get('name', '')}:\n"
+                f"📦 {report.kg_collected.value:g} kg di {report.location} "
+                f"(via {source})\n"
+                f"⚠️ Alasan: {report.flag_reason}\n"
+                "Cek di dashboard → Reports → Perlu Dicek"
+            )
+
+        # Fire-and-forget rank refresh
+        try:
+            from backend.utils.ranking_calculator import RankingCalculator
+
+            _asyncio.create_task(
+                RankingCalculator().refresh_volunteer(str(report.volunteer_id))
+            )
+        except Exception as exc:
+            logger.warning("Could not schedule rank refresh: %s", exc)
+
+        impact = ImpactCalculator.format_impact_summary(report.kg_collected.value)
+        remaining = max(quota - total_reported, 0)
+        pct = (total_reported / quota * 100) if quota else 0
+
+        if pct >= 100:
+            status_line = "🎉 SELESAI! Kamu sudah memenuhi kuota misimu!"
+        elif pct >= 75:
+            status_line = f"Hampir selesai! Sisa {remaining:.1f} kg lagi 💪"
+        elif pct >= 50:
+            status_line = f"Sudah separuh jalan! Sisa {remaining:.1f} kg"
+        else:
+            status_line = f"Good start! Masih ada {remaining:.1f} kg lagi"
+
+        confirmation = (
+            f"✅ Laporan diterima, {volunteer.get('name', '')}!\n"
+            f"📦 {report.kg_collected.value:g} kg dari {report.location} tercatat.\n"
+            f"📊 Progress: {total_reported:g}/{quota:g} kg "
+            f"({pct:.0f}%) — {status_line}\n\n"
+            f"🌍 Dampak hari ini:\n"
+            f"  🍶 {impact['bottles']:,} botol diselamatkan\n"
+            f"  🌿 {impact['co2_kg']:.1f} kg CO₂ dicegah"
+        )
+        if source == "google_form":
+            confirmation += "\n\n📋 Laporan via form berhasil diterima!"
+        if source == "fasilitator_relay":
+            confirmation += "\n\n✅ Diverifikasi fasilitator."
+            await _notify_volunteer(
+                volunteer,
+                f"📨 Fasilitator mencatat laporan kamu: "
+                f"{report.kg_collected.value:g} kg di {report.location}.\n"
+                f"Status: terverifikasi.\n"
+                f"Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%)",
+            )
+        return confirmation
 
     async def _program_summary(self, context: dict) -> str:
         """Fasilitator-persona view: program-wide totals + who's behind on quota."""
@@ -596,65 +748,50 @@ class ProgressTrackerAgent(BaseAgent):
 
         return "\n\n".join(chunks)
 
-    @staticmethod
-    def _get_active_mission(volunteer_id: str) -> dict | None:
-        result = (
-            db.table("volunteer_missions")
-            .select("quota_kg, assigned_area, missions(*)")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-        )
-        for row in result.data or []:
-            mission = row.get("missions")
-            if mission and mission.get("status") == "active":
-                mission["quota_kg"] = row.get("quota_kg")
-                mission["assigned_area"] = row.get("assigned_area")
-                return mission
-        return None
+    _get_active_mission = staticmethod(_shared_get_active_mission)
+
+    _find_duplicate_today = staticmethod(report_repository.find_duplicate_today)
+    _find_latest_today = staticmethod(report_repository.find_latest_today)
 
     @staticmethod
-    def _find_duplicate_today(volunteer_id: str, mission_id: str, kg: float) -> dict | None:
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        rows = (
-            db.table("reports")
-            .select("id, kg_collected")
-            .eq("volunteer_id", volunteer_id)
-            .eq("mission_id", mission_id)
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        return next(
-            (r for r in rows if abs(float(r["kg_collected"]) - kg) < 1), None
-        )
+    def _classify_duplicate(
+        existing: dict, new_kg: float, new_location: str
+    ) -> tuple[str, str]:
+        """Return ``(verdict, ask_message)`` for the duplicate clarifier.
 
-    @staticmethod
-    def _sync_reported_kg(volunteer_id: str, mission_id: str) -> float:
-        """Recompute the volunteer's total for this mission and mirror it on volunteer_missions."""
-        rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .eq("volunteer_id", volunteer_id)
-            .eq("mission_id", mission_id)
-            .execute()
-            .data
-            or []
+        Verdicts:
+        * ``clear_duplicate`` — kg within 1, same location.
+        * ``ambiguous``      — kg 1..5 apart.
+        * ``likely_addition`` — kg ≥ 5 apart or different location.
+
+        ``ask_message`` is only meaningful for the first two verdicts.
+        """
+        existing_kg = float(existing.get("kg_collected") or 0)
+        existing_loc = (existing.get("location") or "")
+        kg_diff = abs(new_kg - existing_kg)
+        same_location = (
+            new_location.lower() in existing_loc.lower()
+            or existing_loc.lower() in new_location.lower()
         )
-        total = sum(float(r["kg_collected"]) for r in rows)
-        try:
-            (
-                db.table("volunteer_missions")
-                .update({"reported_kg": total})
-                .eq("volunteer_id", volunteer_id)
-                .eq("mission_id", mission_id)
-                .execute()
+        time_str = ProgressTrackerAgent._format_local_time(existing.get("reported_at"))
+
+        if kg_diff < 1 and same_location:
+            ask = (
+                f"Kamu tadi sudah submit {existing_kg:g} kg dari {existing_loc} "
+                f"pada pukul {time_str}. Ini laporan tambahan atau sama?"
             )
-        except Exception as exc:
-            # Column requires the Part-7 migration; don't fail the report if it's missing
-            logger.warning("Could not update volunteer_missions.reported_kg: %s", exc)
-        return total
+            return "clear_duplicate", ask
+
+        if kg_diff >= 5 or not same_location:
+            return "likely_addition", ""
+
+        ask = (
+            f"Tadi kamu sudah lapor {existing_kg:g} kg pada {time_str}. "
+            f"Laporan baru ini {new_kg:g} kg — ini tambahan atau koreksi "
+            "laporan tadi?"
+        )
+        return "ambiguous", ask
+
+    _format_local_time = staticmethod(_shared_format_hhmm)
+
+    _sync_reported_kg = staticmethod(report_repository.sync_reported_kg)

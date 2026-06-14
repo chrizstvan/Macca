@@ -10,10 +10,10 @@ import logging
 import re
 from typing import Any
 
-import httpx
-
 from backend.config import settings
+from backend.utils.http_dispatcher import get_bytes, get_json, post_json
 from backend.utils.image_handler import ImageHandler
+from backend.utils.phone_utils import normalize_phone
 from .base_handler import BaseChannelHandler
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ class WhatsAppHandler(BaseChannelHandler):
         else:
             text = f"[{message_type} message — belum didukung]"
 
-        return {
+        ctx: dict[str, Any] = {
             "channel": "whatsapp",
             "sender_phone": sender_phone,
             "wa_message_id": message.get("id"),
@@ -121,6 +121,11 @@ class WhatsAppHandler(BaseChannelHandler):
             "photo_url": photo_url,
             "chat_type": "private",
         }
+        # If the fasilitator forwards a photo report, mark the source so the
+        # progress tracker skips photo verification and auto-verifies.
+        if message_type == "image" and self.is_fasilitator(sender_phone):
+            ctx["source"] = "fasilitator_relay"
+        return ctx
 
     # ------------------------------------------------------------------ #
     # Outbound — text / image / buttons                                   #
@@ -214,23 +219,24 @@ class WhatsAppHandler(BaseChannelHandler):
         """Resolve a Graph media_id to a signed URL and return the bytes."""
         if not settings.whatsapp_access_token or not media_id:
             return None
-        headers = {"Authorization": f"Bearer {settings.whatsapp_access_token}"}
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                meta_resp = await client.get(
-                    f"{GRAPH_BASE}/{media_id}", headers=headers
-                )
-                meta_resp.raise_for_status()
-                media_url = meta_resp.json().get("url")
-                if not media_url:
-                    logger.error("WhatsApp media %s: missing 'url' in metadata", media_id)
-                    return None
-                bin_resp = await client.get(media_url, headers=headers)
-                bin_resp.raise_for_status()
-                return bin_resp.content
-        except httpx.HTTPError as exc:
-            logger.error("WhatsApp download_media %s failed: %s", media_id, exc)
+        ok, meta = await get_json(
+            f"{GRAPH_BASE}/{media_id}",
+            auth_token=settings.whatsapp_access_token,
+            timeout=30,
+            log_label="whatsapp.media_meta",
+        )
+        if not ok or not meta:
             return None
+        media_url = meta.get("url")
+        if not media_url:
+            logger.error("WhatsApp media %s: missing 'url' in metadata", media_id)
+            return None
+        return await get_bytes(
+            media_url,
+            auth_token=settings.whatsapp_access_token,
+            timeout=30,
+            log_label="whatsapp.media_bytes",
+        )
 
     # ------------------------------------------------------------------ #
     # Fasilitator alert                                                   #
@@ -238,7 +244,7 @@ class WhatsAppHandler(BaseChannelHandler):
 
     async def send_alert(self, text: str) -> None:
         """DM the fasilitator at ``settings.fasilitator_phone``."""
-        phone = self._normalize_phone(settings.fasilitator_phone)
+        phone = normalize_phone(settings.fasilitator_phone)
         if not phone:
             logger.warning("WhatsApp send_alert: fasilitator_phone not configured")
             return
@@ -250,8 +256,8 @@ class WhatsAppHandler(BaseChannelHandler):
 
     def is_fasilitator(self, sender_id: str) -> bool:
         """True if ``sender_id`` (phone) matches the configured fasilitator."""
-        sender = self._normalize_phone(sender_id)
-        fasilitator = self._normalize_phone(settings.fasilitator_phone)
+        sender = normalize_phone(sender_id)
+        fasilitator = normalize_phone(settings.fasilitator_phone)
         return bool(sender and fasilitator and sender == fasilitator)
 
     # ------------------------------------------------------------------ #
@@ -266,25 +272,13 @@ class WhatsAppHandler(BaseChannelHandler):
 
     async def _post_messages(self, payload: dict[str, Any]) -> bool:
         url = f"{GRAPH_BASE}/{settings.whatsapp_phone_number_id}/messages"
-        headers = {
-            "Authorization": f"Bearer {settings.whatsapp_access_token}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-            return True
-        except httpx.HTTPError as exc:
-            body = None
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    body = response.text
-                except Exception:
-                    body = None
-            logger.error("WhatsApp send failed: %s — body: %s", exc, body)
-            return False
+        ok, _body = await post_json(
+            url,
+            payload,
+            auth_token=settings.whatsapp_access_token,
+            log_label="whatsapp.send",
+        )
+        return ok
 
     @staticmethod
     def _to_whatsapp_markdown(text: str) -> str:
@@ -311,18 +305,7 @@ class WhatsAppHandler(BaseChannelHandler):
         converted = re.sub(r"__(.+?)__", r"_\1_", converted, flags=re.DOTALL)
         return converted
 
-    @staticmethod
-    def _normalize_phone(phone: str) -> str:
-        if not phone:
-            return ""
-        cleaned = (
-            phone.strip()
-            .replace("+", "")
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
-        )
-        if cleaned.startswith("08"):
-            cleaned = "62" + cleaned[1:]
-        return cleaned
+    # ``_normalize_phone`` kept as an alias so subclasses / external callers
+    # that reference ``WhatsAppHandler._normalize_phone`` keep working; the
+    # canonical implementation lives in ``backend.utils.phone_utils``.
+    _normalize_phone = staticmethod(normalize_phone)

@@ -1,6 +1,12 @@
 """Channel handler modules for incoming and outgoing message routing."""
 
-from .base_handler import BaseChannelHandler, MultiChannelHandler, get_active_handler
+from .base_handler import (
+    BaseChannelHandler,
+    InboundReceiver,
+    MultiChannelHandler,
+    OutboundSender,
+    get_active_handler,
+)
 from .telegram_channel_handler import TelegramHandler
 from .telegram_handler import (
     build_context,
@@ -16,7 +22,9 @@ from .whatsapp_handler import WhatsAppHandler
 
 __all__ = [
     "BaseChannelHandler",
+    "InboundReceiver",
     "MultiChannelHandler",
+    "OutboundSender",
     "TelegramHandler",
     "WhatsAppHandler",
     "get_active_handler",

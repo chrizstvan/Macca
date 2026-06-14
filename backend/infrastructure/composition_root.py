@@ -1,0 +1,63 @@
+"""Composition root: the only place that knows concrete adapter classes.
+
+FastAPI routes / agents that want to use a use case import a *builder*
+from here, never the adapter classes directly. Keeps the dependency
+graph honest: ``application`` and ``domain`` never import infrastructure.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+
+from backend.application.use_cases.brief_mission import BriefMission
+from backend.application.use_cases.submit_report import SubmitReport
+from backend.config import settings
+from backend.database.supabase_client import db
+
+from .llm.anthropic_client import AnthropicLLMClient
+from .persistence.supabase_chat_history_repo import (
+    SupabaseChatHistoryRepository,
+)
+from .persistence.supabase_mission_repo import SupabaseMissionRepository
+from .persistence.supabase_report_repo import SupabaseReportRepository
+from .persistence.supabase_volunteer_repo import SupabaseVolunteerRepository
+from .system.utc_clock import UtcClock
+from .vision.photo_verifier_adapter import ClaudePhotoVerifier
+
+
+@lru_cache(maxsize=1)
+def _clock() -> UtcClock:
+    return UtcClock()
+
+
+@lru_cache(maxsize=1)
+def _llm() -> AnthropicLLMClient:
+    return AnthropicLLMClient(
+        settings.anthropic_api_key,
+        default_model=settings.claude_default_model,
+        default_max_tokens=settings.default_max_tokens,
+    )
+
+
+def build_submit_report() -> SubmitReport:
+    return SubmitReport(
+        volunteers=SupabaseVolunteerRepository(db),
+        missions=SupabaseMissionRepository(db),
+        reports=SupabaseReportRepository(db),
+        photos=ClaudePhotoVerifier(),
+        clock=_clock(),
+    )
+
+
+def build_brief_mission() -> BriefMission:
+    return BriefMission(
+        volunteers=SupabaseVolunteerRepository(db),
+        missions=SupabaseMissionRepository(db),
+        reports=SupabaseReportRepository(db),
+        history=SupabaseChatHistoryRepository(db),
+        llm=_llm(),
+        clock=_clock(),
+    )
+
+
+__all__ = ["build_submit_report", "build_brief_mission"]

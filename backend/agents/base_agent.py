@@ -8,11 +8,14 @@ import anthropic
 
 from backend.config import settings
 from backend.database.supabase_client import db
+from backend.utils.phone_utils import normalize_phone
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # cost-efficient default
-COMPLEX_MODEL = "claude-sonnet-4-6"  # override for complex tasks
+# Snapshot at import time — overridable via env vars CLAUDE_DEFAULT_MODEL /
+# CLAUDE_COMPLEX_MODEL. See ``backend.config`` for defaults.
+DEFAULT_MODEL = settings.claude_default_model
+COMPLEX_MODEL = settings.claude_complex_model
 
 FALLBACK_MESSAGE = (
     "Sorry, I'm having trouble processing your message right now. "
@@ -42,14 +45,17 @@ class BaseAgent(ABC):
         system_prompt: str,
         messages: list,
         model: str = DEFAULT_MODEL,
-        max_tokens: int = 1000,
+        max_tokens: int | None = None,
     ) -> str:
         """Call Claude and return the response text.
 
-        Uses claude-haiku-4-5 by default for cost efficiency; pass
-        ``model=COMPLEX_MODEL`` (claude-sonnet-4-6) for complex tasks.
+        Uses the configured default model (Haiku) for cost efficiency;
+        pass ``model=COMPLEX_MODEL`` for complex tasks. ``max_tokens``
+        defaults to ``settings.default_max_tokens`` when omitted.
         Returns a friendly fallback message on API errors.
         """
+        if max_tokens is None:
+            max_tokens = settings.default_max_tokens
         try:
             response = await self.anthropic_client.messages.create(
                 model=model,
@@ -125,30 +131,14 @@ class BaseAgent(ABC):
         )
         return result.data[0] if result.data else None
 
-    @staticmethod
-    def _normalize_phone(phone: str) -> str:
-        """Normalize to digits-only Indonesian E.164 (62xxxxxxxxx).
-
-        Strips '+', spaces, hyphens, and parentheses; rewrites a leading
-        '08' to '628'. Returns empty string if input is empty/None.
-        """
-        if not phone:
-            return ""
-        cleaned = (
-            phone.strip()
-            .replace("+", "")
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
-        )
-        if cleaned.startswith("08"):
-            cleaned = "62" + cleaned[1:]
-        return cleaned
+    # Thin alias preserved for back-compat with subclasses that still call
+    # ``self._normalize_phone``; the canonical implementation now lives in
+    # ``backend.utils.phone_utils.normalize_phone``.
+    _normalize_phone = staticmethod(normalize_phone)
 
     async def get_volunteer_by_phone(self, phone: str) -> dict[str, Any] | None:
         """Fetch a volunteer by phone (normalised), or None if not registered."""
-        normalized = self._normalize_phone(phone)
+        normalized = normalize_phone(phone)
         if not normalized:
             return None
         result = (
@@ -181,8 +171,8 @@ class BaseAgent(ABC):
 
     def is_fasilitator(self, context: dict) -> bool:
         """True if the message sender is the fasilitator on either channel."""
-        sender_phone = self._normalize_phone(context.get("sender_phone") or "")
-        fasilitator_phone = self._normalize_phone(settings.fasilitator_phone)
+        sender_phone = normalize_phone(context.get("sender_phone"))
+        fasilitator_phone = normalize_phone(settings.fasilitator_phone)
         if sender_phone and fasilitator_phone and sender_phone == fasilitator_phone:
             return True
 

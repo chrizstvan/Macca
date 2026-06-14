@@ -15,28 +15,42 @@ import logging
 
 from backend.config import settings
 from backend.database.supabase_client import db
+from backend.utils.query_utils import find_volunteers_by_name
+
 from .base_agent import BaseAgent
-from .content_creator import ContentCreatorAgent
+
+# Importing the specialist agent modules has the side effect of populating
+# the intent registry via the ``@register_intent`` decorators on each class.
+# Order doesn't matter as long as every specialist module is imported before
+# the router builds its dispatch table.
+from . import (  # noqa: F401  (imports for registry side-effect)
+    content_creator,
+    impact_analyzer,
+    mission_briefing,
+    progress_tracker,
+    volunteer_support,
+)
 from .fasilitator_hub import FasilitatorHubAgent
-from .impact_analyzer import ImpactAnalyzerAgent
-from .mission_briefing import MissionBriefingAgent
-from .progress_tracker import ProgressTrackerAgent, has_pending_report
-from .prompts.router import CLASSIFICATION_PROMPT
-from .volunteer_support import VolunteerSupportAgent
+from .intent_registry import (
+    build_classification_prompt,
+    get_intent_names,
+    instantiate_agents,
+)
+from .progress_tracker import RANK_KEYWORDS, has_pending_report_for_context
+from .volunteer_support import is_allowed_topic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTENT = "volunteer_support"
 
-# fasilitator_hub is intentionally absent: it is reachable only via the
-# is_fasilitator check in route(), never via classification.
-VALID_INTENTS = (
-    "mission_briefing",
-    "progress_tracker",
-    "volunteer_support",
-    "content_creator",
-    "impact_analyzer",
-)
+
+def __getattr__(name: str):
+    """Back-compat shims for symbols that used to be module-level constants."""
+    if name == "VALID_INTENTS":
+        return get_intent_names()
+    if name == "CLASSIFICATION_PROMPT":
+        return build_classification_prompt()
+    raise AttributeError(f"module 'router_agent' has no attribute {name!r}")
 
 # ---------------------------------------------------------------------- #
 # Test mode — module-level so it survives across messages within a       #
@@ -59,14 +73,15 @@ class RouterAgent(BaseAgent):
             name="router",
             description="Classifies message intent and dispatches to specialist agents",
         )
-        self._agents = agents or {
-            "mission_briefing": MissionBriefingAgent(),
-            "progress_tracker": ProgressTrackerAgent(),
-            "volunteer_support": VolunteerSupportAgent(),
-            "content_creator": ContentCreatorAgent(),
-            "impact_analyzer": ImpactAnalyzerAgent(),
-            "fasilitator_hub": FasilitatorHubAgent(),
-        }
+        if agents is None:
+            agents = instantiate_agents()
+            # fasilitator_hub is intentionally absent from the registry: it is
+            # reachable only via the is_fasilitator check in route(), never via
+            # classification. Wire it in here so route() can still dispatch.
+            agents.setdefault("fasilitator_hub", FasilitatorHubAgent())
+        self._agents = agents
+        # Snapshot the valid classifier outputs once at construction time.
+        self._valid_intents: tuple[str, ...] = get_intent_names()
         self.last_agent: str = self.name
 
     # ------------------------------------------------------------------ #
@@ -85,16 +100,29 @@ class RouterAgent(BaseAgent):
 
     async def classify_intent(self, message: str, context: dict) -> str:
         """Pending-report short-circuit + Claude Haiku classification."""
-        if has_pending_report(context.get("telegram_id")):
+        if has_pending_report_for_context(context):
             return "progress_tracker"
 
+        # Rank/leaderboard inquiries go straight to progress_tracker — no
+        # need to round-trip Claude for an unambiguous keyword match.
+        lowered = message.lower()
+        if any(kw in lowered for kw in RANK_KEYWORDS):
+            return "progress_tracker"
+
+        # Cheap off-topic gate: skip Claude classification entirely when the
+        # message is clearly outside the program scope. volunteer_support will
+        # short-circuit again with the canned OFF_TOPIC_RESPONSE.
+        if is_allowed_topic(message) is False:
+            logger.info("Off-topic message short-circuited to %s", DEFAULT_INTENT)
+            return DEFAULT_INTENT
+
         label = await self.call_claude(
-            CLASSIFICATION_PROMPT,
+            build_classification_prompt(),
             [{"role": "user", "content": message}],
             max_tokens=20,
         )
         intent = label.strip().lower()
-        if intent not in VALID_INTENTS:
+        if intent not in self._valid_intents:
             logger.warning("Invalid intent %r, defaulting to %s", intent, DEFAULT_INTENT)
             intent = DEFAULT_INTENT
         return intent
@@ -128,7 +156,15 @@ class RouterAgent(BaseAgent):
 
         Returns the user-facing reply text, or ``None`` if the message is not
         a recognised test command (caller continues with normal routing).
+        ``settings.test_mode_enabled=False`` short-circuits all three so
+        production deployments can disable impersonation without rebuilding.
         """
+        if not settings.test_mode_enabled:
+            return (
+                "Test mode dimatikan di environment ini. "
+                "Hubungi admin untuk mengaktifkan kembali."
+            )
+
         cmd = message.strip()
         lowered = cmd.lower()
 
@@ -208,6 +244,8 @@ class RouterAgent(BaseAgent):
                 context["volunteer"] = volunteer
                 context["is_fasilitator"] = False
                 context["is_test_mode"] = True
+                # Persist so downstream build_context_flags calls don't reset it.
+                context["test_volunteer_id"] = volunteer["id"]
 
         # 3. Fasilitator (not in test mode) → Fasilitator Hub
         if context["is_fasilitator"]:
@@ -232,16 +270,7 @@ class RouterAgent(BaseAgent):
     # Supabase helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _find_volunteers_by_name(name: str) -> list[dict]:
-        """Case-insensitive partial-name lookup."""
-        result = (
-            db.table("volunteers")
-            .select("id, name, area, quota_kg")
-            .ilike("name", f"%{name}%")
-            .execute()
-        )
-        return result.data or []
+    _find_volunteers_by_name = staticmethod(find_volunteers_by_name)
 
     @staticmethod
     def _get_volunteer_by_id(volunteer_id: str) -> dict | None:

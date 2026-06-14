@@ -1,4 +1,10 @@
-"""Classification prompt for the router agent."""
+"""Legacy classification prompt for the router agent.
+
+Pass E moved the canonical prompt into the registry — see
+``backend.agents.intent_registry.build_classification_prompt``. This
+module is kept only as a frozen reference of the pre-registry prompt so
+prompt-engineering history is visible in the repo.
+"""
 
 CLASSIFICATION_PROMPT = """Kamu adalah router untuk Macca, platform koordinasi volunteer pengumpulan sampah plastik di Jakarta. Klasifikasikan pesan volunteer ke dalam TEPAT SATU kategori berikut. Balas HANYA dengan string kategorinya, tanpa tanda baca atau penjelasan apa pun.
 

@@ -1,11 +1,10 @@
-"""BaseChannelHandler-compatible wrapper around the Telegram Bot HTTP API.
+"""Outbound-only wrapper around the Telegram Bot HTTP API.
 
 The richer Telegram bot pipeline lives in :mod:`telegram_handler` (PTB +
-webhook). This module exposes the same surface as
-:class:`backend.channels.whatsapp_handler.WhatsAppHandler` so the channel
-factory in ``base_handler.py`` can return either implementation, and so
-outbound helpers (alerts, broadcasts) can reach Telegram without coupling
-to the PTB Application object.
+webhook); that module owns the *inbound* surface. This module exposes
+just the :class:`OutboundSender` interface so the channel factory can
+return a uniform "thing you can send with" regardless of which channel
+is active.
 
 We deliberately call the Telegram HTTP API directly (via httpx) instead
 of importing PTB here — that keeps this wrapper lightweight and avoids
@@ -15,10 +14,9 @@ double-wiring the Application instance.
 import logging
 from typing import Any
 
-import httpx
-
 from backend.config import settings
-from .base_handler import BaseChannelHandler
+from backend.utils.http_dispatcher import get_bytes, get_json, post_json
+from .base_handler import OutboundSender
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +27,13 @@ def _api_base() -> str:
     return f"https://api.telegram.org/bot{settings.telegram_bot_token}"
 
 
-class TelegramHandler(BaseChannelHandler):
-    """HTTP-only Telegram handler used by the channel factory."""
+class TelegramHandler(OutboundSender):
+    """Outbound-only Telegram handler used by the channel factory.
 
-    async def handle_incoming(self, request_body: dict[str, Any]) -> None:
-        """No-op: PTB owns the Telegram inbound pipeline at ``/webhook``.
-
-        Kept as a stub so MultiChannelHandler can hold a TelegramHandler
-        instance without the factory caller having to special-case channels.
-        """
-        return None
+    Inbound dispatch is owned by :mod:`telegram_handler` (PTB application).
+    This class doesn't implement :class:`InboundReceiver` because it would
+    only ever return ``None`` — see Pass D notes in ``base_handler``.
+    """
 
     async def send_message(self, to: str, text: str) -> bool:
         return await self._post(
@@ -78,26 +73,23 @@ class TelegramHandler(BaseChannelHandler):
         """Resolve a Telegram file_id to bytes via getFile + CDN download."""
         if not media_id:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                meta = await client.get(
-                    f"{_api_base()}/getFile", params={"file_id": media_id}
-                )
-                meta.raise_for_status()
-                file_path = (meta.json().get("result") or {}).get("file_path")
-                if not file_path:
-                    logger.error("Telegram getFile %s: missing file_path", media_id)
-                    return None
-                cdn = (
-                    f"https://api.telegram.org/file/bot"
-                    f"{settings.telegram_bot_token}/{file_path}"
-                )
-                resp = await client.get(cdn)
-                resp.raise_for_status()
-                return resp.content
-        except httpx.HTTPError as exc:
-            logger.error("Telegram download_media %s failed: %s", media_id, exc)
+        ok, body = await get_json(
+            f"{_api_base()}/getFile",
+            params={"file_id": media_id},
+            timeout=30,
+            log_label="telegram.getFile",
+        )
+        if not ok or not body:
             return None
+        file_path = (body.get("result") or {}).get("file_path")
+        if not file_path:
+            logger.error("Telegram getFile %s: missing file_path", media_id)
+            return None
+        cdn = (
+            f"https://api.telegram.org/file/bot"
+            f"{settings.telegram_bot_token}/{file_path}"
+        )
+        return await get_bytes(cdn, timeout=30, log_label="telegram.cdn")
 
     async def send_alert(self, text: str) -> None:
         if not settings.fasilitator_telegram_id:
@@ -117,18 +109,9 @@ class TelegramHandler(BaseChannelHandler):
         if not settings.telegram_bot_token:
             logger.error("Telegram bot token not configured")
             return False
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(f"{_api_base()}/{method}", json=payload)
-                resp.raise_for_status()
-            return True
-        except httpx.HTTPError as exc:
-            body = None
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    body = response.text
-                except Exception:
-                    body = None
-            logger.error("Telegram %s failed: %s — body: %s", method, exc, body)
-            return False
+        ok, _body = await post_json(
+            f"{_api_base()}/{method}",
+            payload,
+            log_label=f"telegram.{method}",
+        )
+        return ok
