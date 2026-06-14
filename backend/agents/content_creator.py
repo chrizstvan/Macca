@@ -1,9 +1,21 @@
 """Content creator agent that drafts social posts, reports, and campaign material."""
 
 from .base_agent import BaseAgent, COMPLEX_MODEL
+from .intent_registry import register_intent
 from .prompts.content_creator import SYSTEM_PROMPT
 
 
+@register_intent(
+    name="content_creator",
+    description=(
+        "minta dibuatkan konten media sosial, caption, post, teks pengumuman"
+    ),
+    examples=(
+        "buatkan caption instagram hari ini",
+        "tolong bikin post story wa tentang misi minggu ini",
+        "bikin teks pengumuman buat grup dong",
+    ),
+)
 class ContentCreatorAgent(BaseAgent):
     """Drafts campaign and communication content on request."""
 

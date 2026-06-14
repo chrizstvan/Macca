@@ -84,6 +84,21 @@ def _get_field(data: dict, candidates: tuple[str, ...]) -> str | None:
     return None
 
 
+@register_intent(
+    name="progress_tracker",
+    description=(
+        "laporan plastik terkumpul (mengandung angka + kg/kilo + lokasi), "
+        "pertanyaan tentang progress atau sisa target pribadi"
+    ),
+    examples=(
+        "laporan 18 kg menteng",
+        "udah nih 25 kilo di cikini [foto]",
+        "saya sudah kumpul 5 kg di senen",
+        "laporan foto",
+        "progress saya udah berapa kg?",
+        "kurang berapa lagi biar capai target?",
+    ),
+)
 class ProgressTrackerAgent(BaseAgent):
     """Turns chat messages and Google Form submissions into rows in the reports table."""
 

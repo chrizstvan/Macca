@@ -16,32 +16,41 @@ import logging
 from backend.config import settings
 from backend.database.supabase_client import db
 from backend.utils.query_utils import find_volunteers_by_name
+
 from .base_agent import BaseAgent
-from .content_creator import ContentCreatorAgent
-from .fasilitator_hub import FasilitatorHubAgent
-from .impact_analyzer import ImpactAnalyzerAgent
-from .mission_briefing import MissionBriefingAgent
-from .progress_tracker import (
-    ProgressTrackerAgent,
-    RANK_KEYWORDS,
-    has_pending_report_for_context,
+
+# Importing the specialist agent modules has the side effect of populating
+# the intent registry via the ``@register_intent`` decorators on each class.
+# Order doesn't matter as long as every specialist module is imported before
+# the router builds its dispatch table.
+from . import (  # noqa: F401  (imports for registry side-effect)
+    content_creator,
+    impact_analyzer,
+    mission_briefing,
+    progress_tracker,
+    volunteer_support,
 )
-from .prompts.router import CLASSIFICATION_PROMPT
-from .volunteer_support import VolunteerSupportAgent, is_allowed_topic
+from .fasilitator_hub import FasilitatorHubAgent
+from .intent_registry import (
+    build_classification_prompt,
+    get_intent_names,
+    instantiate_agents,
+)
+from .progress_tracker import RANK_KEYWORDS, has_pending_report_for_context
+from .volunteer_support import is_allowed_topic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTENT = "volunteer_support"
 
-# fasilitator_hub is intentionally absent: it is reachable only via the
-# is_fasilitator check in route(), never via classification.
-VALID_INTENTS = (
-    "mission_briefing",
-    "progress_tracker",
-    "volunteer_support",
-    "content_creator",
-    "impact_analyzer",
-)
+
+def __getattr__(name: str):
+    """Back-compat shims for symbols that used to be module-level constants."""
+    if name == "VALID_INTENTS":
+        return get_intent_names()
+    if name == "CLASSIFICATION_PROMPT":
+        return build_classification_prompt()
+    raise AttributeError(f"module 'router_agent' has no attribute {name!r}")
 
 # ---------------------------------------------------------------------- #
 # Test mode — module-level so it survives across messages within a       #
@@ -64,14 +73,15 @@ class RouterAgent(BaseAgent):
             name="router",
             description="Classifies message intent and dispatches to specialist agents",
         )
-        self._agents = agents or {
-            "mission_briefing": MissionBriefingAgent(),
-            "progress_tracker": ProgressTrackerAgent(),
-            "volunteer_support": VolunteerSupportAgent(),
-            "content_creator": ContentCreatorAgent(),
-            "impact_analyzer": ImpactAnalyzerAgent(),
-            "fasilitator_hub": FasilitatorHubAgent(),
-        }
+        if agents is None:
+            agents = instantiate_agents()
+            # fasilitator_hub is intentionally absent from the registry: it is
+            # reachable only via the is_fasilitator check in route(), never via
+            # classification. Wire it in here so route() can still dispatch.
+            agents.setdefault("fasilitator_hub", FasilitatorHubAgent())
+        self._agents = agents
+        # Snapshot the valid classifier outputs once at construction time.
+        self._valid_intents: tuple[str, ...] = get_intent_names()
         self.last_agent: str = self.name
 
     # ------------------------------------------------------------------ #
@@ -107,12 +117,12 @@ class RouterAgent(BaseAgent):
             return DEFAULT_INTENT
 
         label = await self.call_claude(
-            CLASSIFICATION_PROMPT,
+            build_classification_prompt(),
             [{"role": "user", "content": message}],
             max_tokens=20,
         )
         intent = label.strip().lower()
-        if intent not in VALID_INTENTS:
+        if intent not in self._valid_intents:
             logger.warning("Invalid intent %r, defaulting to %s", intent, DEFAULT_INTENT)
             intent = DEFAULT_INTENT
         return intent

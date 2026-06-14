@@ -7,6 +7,7 @@ yes/no Claude call before deciding.
 """
 
 from .base_agent import BaseAgent
+from .intent_registry import register_intent
 from .prompts.volunteer_support import SYSTEM_PROMPT
 
 ALLOWED_TOPICS = (
@@ -53,6 +54,21 @@ def is_allowed_topic(message: str) -> bool | None:
     return None
 
 
+@register_intent(
+    name="volunteer_support",
+    description=(
+        "masalah, keluhan, mau berhenti, butuh motivasi, pertanyaan umum, "
+        "kebingungan"
+    ),
+    examples=(
+        "capek banget pengen nyerah",
+        "kenapa saya harus ikut program ini?",
+        "saya mau berhenti jadi volunteer",
+        "timbangan saya rusak, gimana dong?",
+        "halo, bot ini bisa apa aja?",
+        "minggu depan saya tidak bisa ikut, izin ya",
+    ),
+)
 class VolunteerSupportAgent(BaseAgent):
     """General-purpose support agent: FAQs, onboarding, and logistics questions."""
 
