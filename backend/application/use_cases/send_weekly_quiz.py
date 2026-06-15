@@ -45,7 +45,9 @@ class SendWeeklyQuiz:
             explanation=spec["explanation"],
             ttl_hours=QUIZ_TTL_HOURS,
         )
-        message = format_quiz_message(spec)
+        fallback_text = format_quiz_message(spec)
         recipients = await self.volunteers.list_active()
-        dispatched = await self.notifier.broadcast(recipients, message)
+        dispatched = await self.notifier.broadcast_quiz(
+            recipients, dict(spec), fallback_text
+        )
         return QuizSent(quiz=quiz, recipients_dispatched=dispatched)

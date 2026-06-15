@@ -109,6 +109,12 @@ class RouterAgent(BaseAgent):
         if any(kw in lowered for kw in RANK_KEYWORDS):
             return "progress_tracker"
 
+        # Cross-volunteer query routing — runs BEFORE the off-topic gate
+        # since a @mention or 'tugas <name>' pattern is always on-topic.
+        cross_intent = self._route_cross_volunteer_query(message, context)
+        if cross_intent is not None:
+            return cross_intent
+
         # Cheap off-topic gate: skip Claude classification entirely when the
         # message is clearly outside the program scope. volunteer_support will
         # short-circuit again with the canned OFF_TOPIC_RESPONSE.
@@ -129,6 +135,39 @@ class RouterAgent(BaseAgent):
 
     def get_agent_for_intent(self, intent: str) -> BaseAgent:
         return self._agents[intent]
+
+    def _route_cross_volunteer_query(
+        self, message: str, context: dict
+    ) -> str | None:
+        """Return the intent string when ``message`` mentions another volunteer.
+
+        Lets us bypass Claude classify entirely when an @mention or
+        ``tugas/progress/info <name>`` keyword is present. Permission check
+        runs here too — peers are sent to ``volunteer_support`` w/ a denial
+        flag so the agent can return the canned refusal message.
+        """
+        from backend.utils.volunteer_resolver import is_cross_volunteer_query
+
+        sender_volunteer = context.get("volunteer")
+        if not is_cross_volunteer_query(
+            message, sender_volunteer=sender_volunteer
+        ):
+            return None
+
+        if context.get("is_fasilitator"):
+            # Routed through fasilitator_hub via the persona path inside route().
+            context["_cross_volunteer_query"] = True
+            return None  # let existing fasilitator_hub gate handle it
+
+        if settings.allow_peer_query:
+            context["_cross_volunteer_query"] = True
+            context["_limited_peer_query"] = True
+            # Send to fasilitator_hub but mark limited view; needs handler
+            # wiring on the hub side to skip the is_fasilitator gate.
+            return "fasilitator_hub"
+
+        context["_peer_query_denied"] = True
+        return DEFAULT_INTENT  # volunteer_support delivers the denial
 
     # ------------------------------------------------------------------ #
     # Process (kept for callers that only want the intent label)         #

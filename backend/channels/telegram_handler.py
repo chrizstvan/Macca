@@ -214,6 +214,26 @@ def build_context(update: Update) -> dict:
     return ctx
 
 
+def _lookup_volunteer_name_by_tg(telegram_id: int | None) -> str | None:
+    """Lookup so Cloudinary public_id leads with the volunteer's name."""
+    if not telegram_id:
+        return None
+    try:
+        rows = (
+            db.table("volunteers")
+            .select("name")
+            .eq("telegram_id", telegram_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.warning("volunteer name lookup failed for tg=%s: %s", telegram_id, exc)
+        return None
+    return (rows[0].get("name") if rows else None) or None
+
+
 # ------------------------------------------------------------------------- #
 # Part H — fasilitator alerts                                                #
 # ------------------------------------------------------------------------- #
@@ -306,8 +326,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if message.photo:
         # Largest size; download + compress (max 1MB) + Cloudinary upload all
         # happen inside upload_from_telegram
+        volunteer_name = _lookup_volunteer_name_by_tg(ctx.get("telegram_id"))
         ctx["photo_url"] = await _image_handler.upload_from_telegram(
-            message.photo[-1].file_id, context.application
+            message.photo[-1].file_id,
+            context.application,
+            volunteer_name=volunteer_name,
         )
         clean_text = (
             extract_clean_message(message.caption, bot_username)

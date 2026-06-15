@@ -48,6 +48,10 @@ class Settings:
     # Active channel — primary outbound channel; fallback is the other one.
     active_channel: str = "telegram"
 
+    # Whether a volunteer can query data about another volunteer (limited
+    # fields). Default off — only the fasilitator sees peer data.
+    allow_peer_query: bool = False
+
     # Claude model defaults (override via env so we can swap models without
     # touching code).
     claude_default_model: str = "claude-haiku-4-5-20251001"
@@ -110,6 +114,14 @@ class Settings:
                 f"got: {active_channel!r}"
             )
         self.active_channel = active_channel
+
+        # Peer-query permission toggle
+        self.allow_peer_query = os.getenv("ALLOW_PEER_QUERY", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         # Claude model + max-tokens defaults
         self.claude_default_model = os.getenv(

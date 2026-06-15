@@ -167,6 +167,14 @@ class VolunteerSupportAgent(BaseAgent):
             context.setdefault("volunteer", volunteer)
         telegram_id = context.get("telegram_id")
 
+        # Cross-volunteer query routed here when peer access is disabled.
+        if context.get("_peer_query_denied"):
+            return (
+                "Hanya fasilitator yang bisa melihat data volunteer lain. "
+                "Untuk lihat data kamu sendiri, tanya 'progress saya' atau "
+                "'apa tugas saya'."
+            )
+
         history = (
             await self.get_chat_history(telegram_id, limit=HISTORY_LIMIT)
             if telegram_id

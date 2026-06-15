@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from backend.config import settings
+from backend.database.supabase_client import db
 from backend.utils.http_dispatcher import get_bytes, get_json, post_json
 from backend.utils.image_handler import ImageHandler
 from backend.utils.phone_utils import normalize_phone
@@ -21,6 +22,22 @@ logger = logging.getLogger(__name__)
 GRAPH_BASE = "https://graph.facebook.com/v18.0"
 WA_TEXT_MAX_LEN = 4096
 WA_BUTTON_TITLE_MAX_LEN = 20
+
+# Inbound dedupe — bounded set of recently-seen ``wa_message_id`` values.
+# Meta can redeliver the same webhook event when our response is slow; the
+# message id stays constant across retries so we drop duplicates here.
+_INBOUND_SEEN_IDS: list[str] = []
+_INBOUND_SEEN_MAX = 256
+
+# Words that surface the quick-action menu. Lowercased + stripped before match.
+MAIN_MENU_TRIGGERS = frozenset({
+    "menu", "mulai", "home", "start", "hi", "hello", "halo", "hallo",
+    "pagi", "siang", "sore", "malam", "kembali", "back",
+    "/menu", "/mulai", "/start", "/home",
+})
+MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
+MAIN_MENU_PROMPT_DEFAULT = "Halo! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
+MAIN_MENU_BUTTONS = ("📝 Lapor plastik", "📊 Lihat progress", "❓ Bantuan")
 
 
 class WhatsAppHandler(BaseChannelHandler):
@@ -47,6 +64,19 @@ class WhatsAppHandler(BaseChannelHandler):
 
         sender_phone = ctx.get("sender_phone")
         wa_message_id = ctx.get("wa_message_id")
+
+        # Dedupe — Meta retries on slow responses with the same message id.
+        if wa_message_id:
+            if wa_message_id in _INBOUND_SEEN_IDS:
+                logger.info(
+                    "WhatsApp dedupe — skipping retry for wa_message_id=%s",
+                    wa_message_id,
+                )
+                return
+            _INBOUND_SEEN_IDS.append(wa_message_id)
+            if len(_INBOUND_SEEN_IDS) > _INBOUND_SEEN_MAX:
+                # Trim oldest in-place to keep the bound small.
+                del _INBOUND_SEEN_IDS[: len(_INBOUND_SEEN_IDS) - _INBOUND_SEEN_MAX]
 
         # Best-effort read receipt — never block dispatch if it fails.
         if sender_phone and wa_message_id:
@@ -75,6 +105,36 @@ class WhatsAppHandler(BaseChannelHandler):
                 logger.exception("WhatsApp onboarding flow failed: %s", exc)
                 proceed_to_router = True
             if not proceed_to_router:
+                return
+
+        # Quick-menu trigger — short-circuit before router/LLM dispatch when
+        # the sender types a menu keyword. Fires for volunteers, and for
+        # the fasilitator ONLY while in /test_as impersonation so the
+        # impersonated volunteer view sees the buttons. Plain fasilitator
+        # (no test_as) stays on the hub's free-text reply path.
+        if sender_phone and text.strip().lower() in MAIN_MENU_TRIGGERS:
+            from backend.agents.router_agent import test_mode_state
+
+            in_test_mode = sender_phone in test_mode_state
+            if not self.is_fasilitator(sender_phone) or in_test_mode:
+                # Look up the volunteer's name so the greeting feels personal.
+                # In /test_as mode, prefer the impersonated volunteer's name.
+                volunteer_name: str | None = None
+                if in_test_mode:
+                    from backend.agents.router_agent import RouterAgent
+
+                    impersonated = RouterAgent._get_volunteer_by_id(
+                        test_mode_state[sender_phone]
+                    )
+                    if impersonated:
+                        volunteer_name = impersonated.get("name")
+                if not volunteer_name:
+                    volunteer_name = await self._lookup_volunteer_name_by_phone(
+                        sender_phone
+                    )
+                await self.send_main_menu(
+                    sender_phone, volunteer_name=volunteer_name
+                )
                 return
 
         try:
@@ -147,8 +207,14 @@ class WhatsAppHandler(BaseChannelHandler):
             media_id = image.get("id")
             text = image.get("caption") or "laporan foto"
             if media_id and settings.whatsapp_access_token:
+                volunteer_name = await self._lookup_volunteer_name_by_phone(
+                    sender_phone
+                )
                 photo_url = await self.image_handler.upload_from_whatsapp(
-                    media_id, settings.whatsapp_access_token, sender_phone
+                    media_id,
+                    settings.whatsapp_access_token,
+                    sender_phone,
+                    volunteer_name=volunteer_name,
                 )
         elif message_type == "interactive":
             interactive = message.get("interactive") or {}
@@ -166,9 +232,15 @@ class WhatsAppHandler(BaseChannelHandler):
             "chat_type": "private",
         }
         # If the fasilitator forwards a photo report, mark the source so the
-        # progress tracker skips photo verification and auto-verifies.
+        # progress tracker skips photo verification and auto-verifies. Skip
+        # the tag while the fasilitator is in /test_as impersonation — in
+        # that mode they are acting as the volunteer, so the photo MUST go
+        # through the verifier like any other volunteer upload.
         if message_type == "image" and self.is_fasilitator(sender_phone):
-            ctx["source"] = "fasilitator_relay"
+            from backend.agents.router_agent import test_mode_state
+
+            if sender_phone not in test_mode_state:
+                ctx["source"] = "fasilitator_relay"
         return ctx
 
     # ------------------------------------------------------------------ #
@@ -235,6 +307,116 @@ class WhatsAppHandler(BaseChannelHandler):
             },
         }
         return await self._post_messages(payload)
+
+    async def send_main_menu(
+        self, to: str, *, volunteer_name: str | None = None
+    ) -> bool:
+        """Send the quick-action reply-button menu (Lapor / Progress / Bantuan).
+
+        Personalises the greeting with the volunteer's first name when known.
+        """
+        first_name = (volunteer_name or "").strip().split(" ")[0]
+        prompt = (
+            MAIN_MENU_PROMPT_WITH_NAME.format(name=first_name)
+            if first_name
+            else MAIN_MENU_PROMPT_DEFAULT
+        )
+        return await self.send_buttons(
+            to,
+            prompt,
+            list(MAIN_MENU_BUTTONS),
+        )
+
+    async def send_list(
+        self,
+        to: str,
+        body_text: str,
+        button_text: str,
+        rows: list[dict],
+        section_title: str = "Pilihan",
+        header_text: str | None = None,
+    ) -> bool:
+        """Send an interactive list message (up to 10 rows per section).
+
+        ``rows`` is a list of dicts with keys ``id``, ``title`` (≤24 chars),
+        and optional ``description`` (≤72 chars). WA renders each row as a
+        tappable option; the tap returns ``interactive.list_reply`` whose
+        ``title`` flows back through ``_parse_payload`` as the message text.
+        """
+        if not self._creds_ready():
+            return False
+        if not rows:
+            return await self.send_message(to, body_text)
+        rendered_rows = [
+            {
+                "id": str(row.get("id") or f"row_{idx}")[:200],
+                "title": str(row.get("title") or "")[:24],
+                "description": str(row.get("description") or "")[:72],
+            }
+            for idx, row in enumerate(rows[:10])
+        ]
+        action: dict[str, Any] = {
+            "button": button_text[:20],
+            "sections": [
+                {"title": section_title[:24], "rows": rendered_rows}
+            ],
+        }
+        interactive: dict[str, Any] = {
+            "type": "list",
+            "body": {"text": self._to_whatsapp_markdown(body_text)[:1024]},
+            "action": action,
+        }
+        if header_text:
+            interactive["header"] = {
+                "type": "text",
+                "text": header_text[:60],
+            }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": interactive,
+        }
+        return await self._post_messages(payload)
+
+    async def send_quiz(self, to: str, quiz: dict) -> bool:
+        """Render a ``QuizSpec``-shaped dict as an interactive list message.
+
+        Each option (e.g. ``"A) Kode 3 (PVC)"``) is split into a single-letter
+        ``title`` (so the inbound list-reply re-enters the router quiz step
+        with just ``"A"``) plus the rest of the option text as
+        ``description``.
+        """
+        question = quiz.get("question") or ""
+        options = quiz.get("options") or []
+        rows = []
+        for raw in options[:10]:
+            text = str(raw).strip()
+            # Split at the first ")" so "A) Kode 3 (PVC)" → ("A", "Kode 3 (PVC)").
+            if ")" in text:
+                letter, _, rest = text.partition(")")
+                letter = letter.strip()
+                description = rest.strip()
+            else:
+                letter = text[:1]
+                description = text[1:].strip()
+            if not letter:
+                continue
+            rows.append(
+                {
+                    "id": f"quiz_{letter}",
+                    "title": letter,
+                    "description": description,
+                }
+            )
+        body = f"🧠 *Quiz Plastik Minggu Ini!*\n\n{question}"
+        return await self.send_list(
+            to,
+            body_text=body,
+            button_text="Pilih jawaban",
+            rows=rows,
+            section_title="Pilihan A–D",
+        )
 
     # ------------------------------------------------------------------ #
     # Read receipts                                                       #
@@ -353,3 +535,23 @@ class WhatsAppHandler(BaseChannelHandler):
     # that reference ``WhatsAppHandler._normalize_phone`` keep working; the
     # canonical implementation lives in ``backend.utils.phone_utils``.
     _normalize_phone = staticmethod(normalize_phone)
+
+    @staticmethod
+    async def _lookup_volunteer_name_by_phone(phone: str) -> str | None:
+        """Quick lookup so uploaded photos get a human-readable filename."""
+        if not phone:
+            return None
+        try:
+            rows = (
+                db.table("volunteers")
+                .select("name")
+                .eq("phone", normalize_phone(phone))
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+        except Exception as exc:
+            logger.warning("volunteer name lookup failed for %s: %s", phone, exc)
+            return None
+        return (rows[0].get("name") if rows else None) or None
