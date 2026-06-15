@@ -26,11 +26,12 @@ WA_BUTTON_TITLE_MAX_LEN = 20
 # Words that surface the quick-action menu. Lowercased + stripped before match.
 MAIN_MENU_TRIGGERS = frozenset({
     "menu", "mulai", "home", "start", "hi", "hello", "halo", "hallo",
-    "pagi", "siang", "sore", "malam",
+    "pagi", "siang", "sore", "malam", "kembali", "back",
     "/menu", "/mulai", "/start", "/home",
 })
-MAIN_MENU_PROMPT = "Halo! Mau ngapain hari ini?"
-MAIN_MENU_BUTTONS = ("Lapor plastik", "Lihat progress", "Bantuan")
+MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
+MAIN_MENU_PROMPT_DEFAULT = "Halo! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
+MAIN_MENU_BUTTONS = ("📝 Lapor plastik", "📊 Lihat progress", "❓ Bantuan")
 
 
 class WhatsAppHandler(BaseChannelHandler):
@@ -97,7 +98,24 @@ class WhatsAppHandler(BaseChannelHandler):
 
             in_test_mode = sender_phone in test_mode_state
             if not self.is_fasilitator(sender_phone) or in_test_mode:
-                await self.send_main_menu(sender_phone)
+                # Look up the volunteer's name so the greeting feels personal.
+                # In /test_as mode, prefer the impersonated volunteer's name.
+                volunteer_name: str | None = None
+                if in_test_mode:
+                    from backend.agents.router_agent import RouterAgent
+
+                    impersonated = RouterAgent._get_volunteer_by_id(
+                        test_mode_state[sender_phone]
+                    )
+                    if impersonated:
+                        volunteer_name = impersonated.get("name")
+                if not volunteer_name:
+                    volunteer_name = await self._lookup_volunteer_name_by_phone(
+                        sender_phone
+                    )
+                await self.send_main_menu(
+                    sender_phone, volunteer_name=volunteer_name
+                )
                 return
 
         try:
@@ -271,11 +289,22 @@ class WhatsAppHandler(BaseChannelHandler):
         }
         return await self._post_messages(payload)
 
-    async def send_main_menu(self, to: str) -> bool:
-        """Send the quick-action reply-button menu (Lapor / Progress / Bantuan)."""
+    async def send_main_menu(
+        self, to: str, *, volunteer_name: str | None = None
+    ) -> bool:
+        """Send the quick-action reply-button menu (Lapor / Progress / Bantuan).
+
+        Personalises the greeting with the volunteer's first name when known.
+        """
+        first_name = (volunteer_name or "").strip().split(" ")[0]
+        prompt = (
+            MAIN_MENU_PROMPT_WITH_NAME.format(name=first_name)
+            if first_name
+            else MAIN_MENU_PROMPT_DEFAULT
+        )
         return await self.send_buttons(
             to,
-            MAIN_MENU_PROMPT,
+            prompt,
             list(MAIN_MENU_BUTTONS),
         )
 
