@@ -18,14 +18,14 @@ from backend.channels.telegram_handler import create_application, init_agents
 from backend.channels.whatsapp_handler import WhatsAppHandler
 from backend.config import settings
 from backend.database.supabase_client import db, test_connection
-from backend.utils.scheduler import MaccaScheduler
+from backend.utils.scheduler import SchedulerManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 application = create_application()
 bot_state = {"username": ""}
-scheduler = MaccaScheduler()
+scheduler = SchedulerManager()
 form_tracker = ProgressTrackerAgent()
 whatsapp_handler = WhatsAppHandler()
 
@@ -80,7 +80,9 @@ async def lifespan(app: FastAPI):
         "0 12 * * 3",
         job_id="weekly_plastic_quiz",
     )
-    scheduler.start()
+    # Default cron jobs (daily_reminder 18:00, morning_briefing 07:00,
+    # daily_content 20:00, weekly_report Mon 08:00) — see SchedulerManager.
+    scheduler.start(default_jobs=True)
 
     # 6. Announce
     logger.info("Bot @%s is live. Webhook set to %s", bot_state["username"], webhook_url)
