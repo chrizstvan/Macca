@@ -192,7 +192,11 @@ class ProgressTrackerAgent(BaseAgent):
                     skip_duplicate_check=True,
                 )
                 volunteer = context.get("volunteer") or {}
-                mission = context.get("mission") or {}
+                mission = context.get("mission") or (
+                    self._get_active_mission(volunteer["id"])
+                    if volunteer.get("id")
+                    else None
+                ) or {}
                 total = (
                     self._sync_reported_kg(volunteer["id"], mission["id"])
                     if volunteer.get("id") and mission.get("id")
@@ -241,7 +245,11 @@ class ProgressTrackerAgent(BaseAgent):
         report_repository.update_report(report_id, update)
 
         volunteer = context.get("volunteer") or {}
-        mission = context.get("mission") or {}
+        mission = context.get("mission") or (
+            self._get_active_mission(volunteer["id"])
+            if volunteer.get("id")
+            else None
+        ) or {}
         if volunteer.get("id") and mission.get("id"):
             self._sync_reported_kg(volunteer["id"], mission["id"])
         if old_kg is not None:
@@ -549,6 +557,22 @@ class ProgressTrackerAgent(BaseAgent):
             return str(exc)
 
         if isinstance(outcome, NeedsPhoto):
+            # Park pending state so the next inbound (the photo) routes back
+            # here instead of being classified by the router as a fresh
+            # message (without state, "laporan foto" would otherwise be
+            # treated as a cross-volunteer query).
+            _set_pending(
+                _pending_key(context),
+                "waiting_photo",
+                {
+                    "kg": kg,
+                    "location": location,
+                    "photo_url": None,
+                    "raw_message": raw_message,
+                    "source": source,
+                    "extra_data": extra_data,
+                },
+            )
             return outcome.message
 
         if isinstance(outcome, PhotoRejected):

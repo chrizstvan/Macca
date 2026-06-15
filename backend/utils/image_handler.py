@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import cloudinary
 import cloudinary.uploader
@@ -15,8 +16,19 @@ from telegram.ext import Application
 from backend.config import settings
 
 WHATSAPP_GRAPH_BASE = "https://graph.facebook.com/v18.0"
+JAKARTA_TZ = ZoneInfo("Asia/Jakarta")
+_MONTH_ABBR = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _today_slug() -> str:
+    """Return today's date in DD-MMM-YYYY (WIB, English month)."""
+    now = datetime.now(JAKARTA_TZ)
+    return f"{now.day:02d}-{_MONTH_ABBR[now.month - 1]}-{now.year}"
 
 cloudinary.config(
     cloud_name=settings.cloudinary_cloud_name,
@@ -33,13 +45,16 @@ class ImageHandler:
     """Compresses and uploads report photos to Cloudinary."""
 
     async def upload_photo(
-        self, photo_bytes: bytes, volunteer_id: str, timestamp: str
+        self, photo_bytes: bytes, identifier: str, timestamp: str
     ) -> str | None:
         """Compress to <=1MB, upload to Cloudinary, and return the secure URL.
 
+        ``identifier`` becomes the leading slug in the Cloudinary ``public_id``
+        — pass the volunteer's display name when available so files in the
+        Media Library are human-readable (e.g. ``Chris_15-Jun-2026``).
         Returns None (and logs the error) if the upload fails.
         """
-        public_id = _sanitize(f"{volunteer_id}_{timestamp}")
+        public_id = _sanitize(f"{identifier}_{timestamp}")
         try:
             # Compression and the Cloudinary SDK are blocking — keep them off the event loop
             result = await asyncio.to_thread(self._compress_and_upload, photo_bytes, public_id)
@@ -50,7 +65,9 @@ class ImageHandler:
             logger.error("Cloudinary upload failed for %s: %s", public_id, exc)
             return None
 
-    async def upload_from_telegram(self, file_id: str, bot: Application) -> str | None:
+    async def upload_from_telegram(
+        self, file_id: str, bot: Application, volunteer_name: str | None = None
+    ) -> str | None:
         """Download a photo from Telegram by file_id and upload it to Cloudinary."""
         try:
             tg_bot = bot.bot if isinstance(bot, Application) else bot
@@ -60,11 +77,15 @@ class ImageHandler:
             logger.error("Failed to download Telegram file %s: %s", file_id, exc)
             return None
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        return await self.upload_photo(photo_bytes, file_id[:16], timestamp)
+        identifier = volunteer_name or file_id[:16]
+        return await self.upload_photo(photo_bytes, identifier, _today_slug())
 
     async def upload_from_whatsapp(
-        self, media_id: str, access_token: str, volunteer_id: str
+        self,
+        media_id: str,
+        access_token: str,
+        sender_phone: str,
+        volunteer_name: str | None = None,
     ) -> str | None:
         """Resolve a WhatsApp Cloud API media_id to bytes, then upload to Cloudinary.
 
@@ -91,17 +112,22 @@ class ImageHandler:
             logger.error("Failed to download WhatsApp media %s: %s", media_id, exc)
             return None
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        return await self.upload_photo(photo_bytes, volunteer_id, timestamp)
+        identifier = volunteer_name or sender_phone
+        return await self.upload_photo(photo_bytes, identifier, _today_slug())
 
     @staticmethod
     def _compress_and_upload(photo_bytes: bytes, public_id: str) -> dict:
+        # overwrite=False so same-day re-uploads from the same volunteer get a
+        # Cloudinary-suffixed public_id instead of silently replacing the prior
+        # file (the date-only timestamp can otherwise collide within a day).
         return cloudinary.uploader.upload(
             BytesIO(_compress(photo_bytes)),
             folder=FOLDER,
             public_id=public_id,
             resource_type="image",
             quality="auto",
+            overwrite=False,
+            unique_filename=True,
         )
 
 

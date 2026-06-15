@@ -51,6 +51,10 @@ _SELF_PRONOUNS: frozenset[str] = frozenset(
         # Determiners / generic noun-equivalents that aren't names
         "yang", "semua", "siapa", "ini", "itu", "mana", "volunteer", "warga",
         "tim", "kak", "pak", "bu", "bapak", "ibu",
+        # Report-flow vocabulary — must never be misread as a person's name
+        "foto", "fotonya", "kg", "kilo", "berat", "hari", "ini",
+        "harian", "mingguan", "bulanan", "tahunan",
+        "plastik", "sampah", "lokasi", "area",
     }
 )
 
