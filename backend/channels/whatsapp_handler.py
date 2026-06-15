@@ -23,6 +23,12 @@ GRAPH_BASE = "https://graph.facebook.com/v18.0"
 WA_TEXT_MAX_LEN = 4096
 WA_BUTTON_TITLE_MAX_LEN = 20
 
+# Inbound dedupe — bounded set of recently-seen ``wa_message_id`` values.
+# Meta can redeliver the same webhook event when our response is slow; the
+# message id stays constant across retries so we drop duplicates here.
+_INBOUND_SEEN_IDS: list[str] = []
+_INBOUND_SEEN_MAX = 256
+
 # Words that surface the quick-action menu. Lowercased + stripped before match.
 MAIN_MENU_TRIGGERS = frozenset({
     "menu", "mulai", "home", "start", "hi", "hello", "halo", "hallo",
@@ -58,6 +64,19 @@ class WhatsAppHandler(BaseChannelHandler):
 
         sender_phone = ctx.get("sender_phone")
         wa_message_id = ctx.get("wa_message_id")
+
+        # Dedupe — Meta retries on slow responses with the same message id.
+        if wa_message_id:
+            if wa_message_id in _INBOUND_SEEN_IDS:
+                logger.info(
+                    "WhatsApp dedupe — skipping retry for wa_message_id=%s",
+                    wa_message_id,
+                )
+                return
+            _INBOUND_SEEN_IDS.append(wa_message_id)
+            if len(_INBOUND_SEEN_IDS) > _INBOUND_SEEN_MAX:
+                # Trim oldest in-place to keep the bound small.
+                del _INBOUND_SEEN_IDS[: len(_INBOUND_SEEN_IDS) - _INBOUND_SEEN_MAX]
 
         # Best-effort read receipt — never block dispatch if it fails.
         if sender_phone and wa_message_id:

@@ -168,12 +168,25 @@ async def whatsapp_verify(request: Request) -> Response:
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request) -> dict:
-    """Receive a WhatsApp Cloud API event and dispatch any inbound message."""
+    """Receive a WhatsApp Cloud API event and dispatch any inbound message.
+
+    We ack 200 immediately, then dispatch in the background. Meta's webhook
+    contract expects a response in under ~20 s — slow Sonnet calls
+    (impact_analyzer, content_creator, fasilitator_hub) blow past that and
+    cause Meta to retry, which used to result in the same report being
+    generated 2-3 times.
+    """
+    import asyncio as _asyncio
+
     payload = await request.json()
-    try:
-        await whatsapp_handler.handle_incoming(payload)
-    except Exception as exc:
-        logger.exception("WhatsApp handle_incoming failed: %s", exc)
+
+    async def _dispatch() -> None:
+        try:
+            await whatsapp_handler.handle_incoming(payload)
+        except Exception as exc:
+            logger.exception("WhatsApp handle_incoming failed: %s", exc)
+
+    _asyncio.create_task(_dispatch())
     return {"ok": True}
 
 

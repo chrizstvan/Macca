@@ -81,6 +81,17 @@ class ContentCreatorAgent(BaseAgent):
 
     async def process(self, message: str, context: dict) -> str:
         context = self.build_context_flags(context)
+        # Hard gate — content drafting is a fasilitator-only feature. Volunteer
+        # routes here only if the intent classifier misroutes a generic
+        # request; /test_as impersonation also reaches this path with
+        # is_fasilitator=False. Both cases refuse politely.
+        if not context.get("is_fasilitator") or context.get("is_test_mode"):
+            return (
+                "Maaf, fitur pembuatan konten media sosial belum bisa diakses "
+                "Kalau mau lapor plastik atau cek "
+                "progress, langsung ketik aja ya 😊"
+            )
+
         volunteer = await self.get_volunteer_flexible(context)
         if volunteer is not None:
             context.setdefault("volunteer", volunteer)
@@ -103,7 +114,7 @@ class ContentCreatorAgent(BaseAgent):
             system_prompt,
             messages,
             model=COMPLEX_MODEL,
-            max_tokens=2000,
+            max_tokens=500,
         )
         reply = self._ensure_required_hashtags(reply)
 
@@ -142,7 +153,7 @@ class ContentCreatorAgent(BaseAgent):
                 }
             ],
             model=COMPLEX_MODEL,
-            max_tokens=2000,
+            max_tokens=500,
         )
         content = self._ensure_required_hashtags(content)
         await alert_fasilitator(
