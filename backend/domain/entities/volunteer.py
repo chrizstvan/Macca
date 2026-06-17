@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID
 
@@ -19,7 +19,11 @@ class Volunteer:
     phone: Phone | None = None
     telegram_id: int | None = None
     is_active: bool = True
-    team: list[str] = field(default_factory=list)
+    # ``team`` is the team-identity string (e.g. "Tim Cikini"). ``None`` or
+    # empty string means the volunteer is on an *individual* mission. The
+    # mapper tolerates legacy ``text[]`` columns by collapsing the first
+    # element into this single label.
+    team: str | None = None
 
     # Per-day mission_briefing cap state
     mission_query_count: int = 0
@@ -55,6 +59,11 @@ class Volunteer:
         ):
             return True
         return False
+
+    @property
+    def is_team_mode(self) -> bool:
+        """True when the volunteer belongs to a team (gets team missions)."""
+        return bool(self.team and self.team.strip())
 
     def reset_daily_quota_if_needed(self, today: date) -> bool:
         """Returns True if the counter was actually reset this call."""

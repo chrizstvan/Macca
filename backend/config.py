@@ -48,6 +48,10 @@ class Settings:
     # Active channel — primary outbound channel; fallback is the other one.
     active_channel: str = "telegram"
 
+    # Streamlit dashboard admin bearer token. Empty → admin endpoints open
+    # (useful for localhost). Set ADMIN_TOKEN in .env for production.
+    admin_token: str = ""
+
     # Whether a volunteer can query data about another volunteer (limited
     # fields). Default off — only the fasilitator sees peer data.
     allow_peer_query: bool = False
@@ -105,6 +109,9 @@ class Settings:
             "yes",
             "on",
         }
+
+        # Dashboard admin token (optional)
+        self.admin_token = os.getenv("ADMIN_TOKEN", "")
 
         # Active channel
         active_channel = os.getenv("ACTIVE_CHANNEL", "telegram").lower().strip()

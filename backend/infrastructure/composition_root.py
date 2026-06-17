@@ -34,6 +34,7 @@ from .persistence.supabase_chat_history_repo import (
 )
 from .persistence.supabase_mission_repo import SupabaseMissionRepository
 from .persistence.supabase_report_repo import SupabaseReportRepository
+from .persistence.supabase_team_repo import SupabaseTeamRepository
 from .persistence.supabase_volunteer_repo import SupabaseVolunteerRepository
 from .system.utc_clock import UtcClock
 from .vision.photo_verifier_adapter import ClaudePhotoVerifier
@@ -65,6 +66,7 @@ def build_submit_report() -> SubmitReport:
 
 def build_brief_mission() -> BriefMission:
     return BriefMission(
+        teams=SupabaseTeamRepository(db),
         volunteers=SupabaseVolunteerRepository(db),
         missions=SupabaseMissionRepository(db),
         reports=SupabaseReportRepository(db),
@@ -118,6 +120,11 @@ def build_handle_inbound_contact() -> HandleInboundContact:
     )
 
 
+def build_team_repository() -> SupabaseTeamRepository:
+    """Read-only team-aggregate repo for confirmation / brief / status text."""
+    return SupabaseTeamRepository(db)
+
+
 __all__ = [
     "build_submit_report",
     "build_brief_mission",
@@ -126,4 +133,5 @@ __all__ = [
     "build_send_weekly_quiz",
     "build_handle_quiz_answer",
     "build_handle_inbound_contact",
+    "build_team_repository",
 ]

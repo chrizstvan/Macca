@@ -1,0 +1,12 @@
+[theme]
+# Forest-dark earth palette — see dashboard/utils/theme.py for the source
+# of truth (Plotly + page accents pull from there).
+base = "dark"
+primaryColor = "#8AA77F"             # sage accent
+backgroundColor = "#0F1A12"          # deep forest
+secondaryBackgroundColor = "#1C2B1F" # surface (sidebar, cards)
+textColor = "#E8E1CC"                # warm ivory
+font = "sans serif"
+
+[server]
+runOnSave = true

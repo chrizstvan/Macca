@@ -712,6 +712,13 @@ class ProgressTrackerAgent(BaseAgent):
             f"Progress total: {total_reported:g}/{quota:g} kg ({pct:.0f}%)\n"
             f"{status_line}"
         )
+
+        # Team mode — append rollup so volunteer sees the team total too.
+        team_line = await self._team_progress_line(
+            volunteer=volunteer, mission_id=report.mission_id
+        )
+        if team_line:
+            confirmation += "\n\n" + team_line
         if source == "google_form":
             confirmation += "\n\n📋 Laporan via form berhasil diterima!"
         if source == "fasilitator_relay":
@@ -724,6 +731,43 @@ class ProgressTrackerAgent(BaseAgent):
                 f"Progress: {total_reported:g}/{quota:g} kg ({pct:.0f}%)",
             )
         return confirmation
+
+    async def _team_progress_line(
+        self, *, volunteer: dict, mission_id
+    ) -> str:
+        """Render the team rollup line for ``volunteer`` if they are in a team.
+
+        Returns an empty string when the volunteer has no ``team`` set
+        (individual mission) — the caller can append unconditionally.
+        """
+        team = volunteer.get("team")
+        # Tolerate both ``text[]`` (legacy) and plain ``text`` columns.
+        if isinstance(team, list):
+            team = next((t for t in team if t and str(t).strip()), None)
+        if not team or not str(team).strip():
+            return ""
+
+        try:
+            from uuid import UUID
+
+            from backend.infrastructure.composition_root import build_team_repository
+
+            progress = await build_team_repository().get_progress(
+                team=str(team).strip(),
+                mission_id=mission_id if hasattr(mission_id, "hex") else UUID(str(mission_id)),
+            )
+        except Exception as exc:
+            logger.warning("team progress lookup failed: %s", exc)
+            return ""
+
+        if progress.member_count == 0:
+            return ""
+        return (
+            f"👥 Tim **{progress.team}** "
+            f"({progress.member_count} anggota): "
+            f"{progress.reported_kg:g}/{progress.total_quota_kg:g} kg "
+            f"({progress.pct:.0f}%)"
+        )
 
     async def _program_summary(self, context: dict) -> str:
         """Fasilitator-persona view: program-wide totals + who's behind on quota."""
