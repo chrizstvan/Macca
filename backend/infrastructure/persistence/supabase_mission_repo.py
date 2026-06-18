@@ -69,6 +69,72 @@ class SupabaseMissionRepository(MissionRepository):
             for r in rows
         ]
 
+    async def assignment_quota_total(self, mission_id: UUID) -> float:
+        rows = (
+            self._db.table("volunteer_missions")
+            .select("quota_kg")
+            .eq("mission_id", str(mission_id))
+            .execute()
+            .data
+            or []
+        )
+        return sum(float(a.get("quota_kg") or 0) for a in rows)
+
+    async def total_assigned_quota(self) -> float:
+        rows = (
+            self._db.table("volunteer_missions")
+            .select("quota_kg")
+            .execute()
+            .data
+            or []
+        )
+        return sum(float(a.get("quota_kg") or 0) for a in rows)
+
+    async def find_active_by_title(self, fragment: str) -> list[Mission]:
+        rows = (
+            self._db.table("missions")
+            .select("*")
+            .ilike("title", f"%{fragment}%")
+            .eq("status", "active")
+            .execute()
+            .data
+            or []
+        )
+        return [mission_from_row(r) for r in rows]
+
+    async def create(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        status: str = "active",
+        deadline: str | None = None,
+    ) -> Mission:
+        row: dict = {"title": title, "description": description, "status": status}
+        if deadline:
+            row["deadline"] = deadline
+        inserted = self._db.table("missions").insert(row).execute().data or []
+        if not inserted:
+            raise RuntimeError("mission insert returned no row")
+        return mission_from_row(inserted[0])
+
+    async def add_assignment(
+        self,
+        *,
+        volunteer_id: UUID,
+        mission_id: UUID,
+        assigned_area: str,
+        quota_kg: float | None = None,
+    ) -> None:
+        row: dict = {
+            "volunteer_id": str(volunteer_id),
+            "mission_id": str(mission_id),
+            "assigned_area": assigned_area,
+        }
+        if quota_kg:
+            row["quota_kg"] = quota_kg
+        self._db.table("volunteer_missions").insert(row).execute()
+
     async def update_reported_kg(
         self, *, volunteer_id: UUID, mission_id: UUID, total_kg: float
     ) -> None:

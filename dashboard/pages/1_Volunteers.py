@@ -242,11 +242,18 @@ with st.expander("➕ Tambah Volunteer Baru"):
         area = f3.text_input("Area Tugas *", placeholder="Menteng")
         quota = f4.number_input("Kuota (kg)", value=20, min_value=1)
         team = st.text_input("Tim", placeholder="Nama1, Nama2, Nama3")
+        telegram_id = st.text_input(
+            "Telegram ID (opsional)",
+            placeholder="cth. 123456789 — hanya jika volunteer pakai Telegram",
+        )
         submitted = st.form_submit_button("Simpan Volunteer")
 
         if submitted:
+            tg_raw = telegram_id.strip()
             if not name or not phone or not area:
                 st.error("Nama, nomor HP, dan area wajib diisi!")
+            elif tg_raw and not tg_raw.isdigit():
+                st.error("Telegram ID harus berupa angka (atau kosongkan).")
             else:
                 normalized = normalize_phone(phone)
                 payload = {
@@ -258,6 +265,8 @@ with st.expander("➕ Tambah Volunteer Baru"):
                 }
                 if team.strip():
                     payload["team"] = team.strip()
+                if tg_raw:
+                    payload["telegram_id"] = int(tg_raw)
                 try:
                     supabase.table("volunteers").insert(payload).execute()
                     clear_caches()
@@ -273,13 +282,14 @@ with st.expander("➕ Tambah Volunteer Baru"):
 
 
 CSV_TEMPLATE = (
-    "name,phone,area,quota_kg,team\n"
-    "Rizki Pratama,08123456789,Menteng,25,Tim Cikini\n"
+    "name,phone,area,quota_kg,team,telegram_id\n"
+    "Rizki Pratama,08123456789,Menteng,25,Tim Cikini,\n"
 )
 
 with st.expander("📥 Import dari CSV"):
     st.caption(
-        "Kolom wajib: ``name``, ``phone``, ``area``. Opsional: ``quota_kg``, ``team``. "
+        "Kolom wajib: ``name``, ``phone``, ``area``. "
+        "Opsional: ``quota_kg``, ``team``, ``telegram_id``. "
         "Phone akan dinormalisasi ke format ``62…``."
     )
     st.download_button(
@@ -314,6 +324,12 @@ with st.expander("📥 Import dari CSV"):
                 team_val = (raw.get("team") or "").strip() if isinstance(raw.get("team"), str) else ""
                 if team_val:
                     row["team"] = team_val
+                tg_val = str(raw.get("telegram_id") or "").strip()
+                # pandas may read the column as a float (e.g. "123.0").
+                if tg_val.endswith(".0"):
+                    tg_val = tg_val[:-2]
+                if tg_val.isdigit():
+                    row["telegram_id"] = int(tg_val)
                 if row["name"] and row["phone"] and row["area"]:
                     records.append(row)
             if not records:

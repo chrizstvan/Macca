@@ -14,7 +14,6 @@ Adds two cross-cutting features on top of plain routing:
 import logging
 
 from backend.config import settings
-from backend.database.supabase_client import db
 from backend.utils.query_utils import find_volunteers_by_name
 
 from .base_agent import BaseAgent
@@ -217,7 +216,7 @@ class RouterAgent(BaseAgent):
             current = test_mode_state.get(sender_key)
             if not current:
                 return "Test mode: *tidak aktif*. Gunakan `/test_as <nama>` untuk mulai."
-            volunteer = self._get_volunteer_by_id(current)
+            volunteer = await self._get_volunteer_by_id(current)
             if volunteer is None:
                 test_mode_state.pop(sender_key, None)
                 return "Test mode bound ke volunteer yang tidak ditemukan — direset."
@@ -281,7 +280,7 @@ class RouterAgent(BaseAgent):
 
         # 2. Test mode active → impersonate the bound volunteer
         if context["is_fasilitator"] and sender_key in test_mode_state:
-            volunteer = self._get_volunteer_by_id(test_mode_state[sender_key])
+            volunteer = await self._get_volunteer_by_id(test_mode_state[sender_key])
             if volunteer is None:
                 # Stale binding — clear it and continue as fasilitator
                 test_mode_state.pop(sender_key, None)
@@ -378,8 +377,9 @@ class RouterAgent(BaseAgent):
     _find_volunteers_by_name = staticmethod(find_volunteers_by_name)
 
     @staticmethod
-    def _get_volunteer_by_id(volunteer_id: str) -> dict | None:
-        result = (
-            db.table("volunteers").select("*").eq("id", volunteer_id).limit(1).execute()
+    async def _get_volunteer_by_id(volunteer_id: str) -> dict | None:
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
-        return result.data[0] if result.data else None
+
+        return await build_volunteer_query_repository().get_by_id(volunteer_id)

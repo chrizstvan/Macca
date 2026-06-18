@@ -112,7 +112,7 @@ class FasilitatorHubAgent(
 
         # Capture project-context updates before anything else — single-turn
         # acknowledgement, no Claude call needed.
-        captured = self._capture_project_context(message)
+        captured = await self._capture_project_context(message)
         if captured is not None:
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", captured, self.name)
@@ -142,10 +142,11 @@ class FasilitatorHubAgent(
         is_psych = any(kw in lowered for kw in PSYCH_KEYWORDS)
         draft_match = DRAFT_PATTERN.search(message)
 
-        volunteers = (
-            db.table("volunteers").select("id, name, area, quota_kg, is_active, telegram_id, phone").execute().data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
+
+        volunteers = await build_volunteer_query_repository().list_all()
 
         # Draft path takes priority — fasilitator already accepted the offer
         # to draft a personalised message.

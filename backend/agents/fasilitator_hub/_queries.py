@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
+from uuid import UUID
 
 from backend.database.supabase_client import db
 
@@ -69,10 +70,10 @@ class QueryMixin:
 
         full_view = bool(context.get("is_fasilitator"))
         if len(allowed) == 1:
-            return self._format_volunteer_query_single(
+            return await self._format_volunteer_query_single(
                 allowed[0], full_view=full_view
             )
-        return self._format_volunteer_query_multi(
+        return await self._format_volunteer_query_multi(
             allowed, full_view=full_view
         )
 
@@ -80,10 +81,10 @@ class QueryMixin:
     # Cross-volunteer formatters                                          #
     # ------------------------------------------------------------------ #
 
-    def _format_volunteer_query_single(
+    async def _format_volunteer_query_single(
         self, volunteer: dict, *, full_view: bool
     ) -> str:
-        total = self._sum_reports_for(volunteer["id"])
+        total = await self._sum_reports_for(volunteer["id"])
         quota = float(volunteer.get("quota_kg") or 0)
         pct = (total / quota * 100) if quota else 0
 
@@ -94,14 +95,14 @@ class QueryMixin:
                 f"📦 Progress: {pct:.0f}% (dari kuota)"
             )
 
-        mission = self._active_mission_for(volunteer["id"])
-        deadline = (mission or {}).get("deadline") or "-"
+        mission = await self._active_mission_for(volunteer["id"])
+        deadline = mission.deadline if (mission and mission.deadline) else "-"
         days_left = self._days_left_to(deadline)
-        last_report = self._last_report_for(volunteer["id"])
+        last_report = await self._last_report_for(volunteer["id"])
         last_line = (
-            f"{last_report['reported_at'][:10]} — "
-            f"{float(last_report['kg_collected']):g} kg di "
-            f"{last_report.get('location') or '-'}"
+            f"{last_report.reported_at.date().isoformat() if last_report.reported_at else '-'} — "
+            f"{last_report.kg_collected.value:g} kg di "
+            f"{last_report.location or '-'}"
             if last_report
             else "(belum ada laporan)"
         )
@@ -120,13 +121,13 @@ class QueryMixin:
             f"Status: {status_emoji} {status_text}"
         )
 
-    def _format_volunteer_query_multi(
+    async def _format_volunteer_query_multi(
         self, volunteers: list[dict], *, full_view: bool
     ) -> str:
         names = " vs ".join(v.get("name") or "?" for v in volunteers)
         lines = [f"📊 Progress {names}:"]
         for v in volunteers:
-            total = self._sum_reports_for(v["id"])
+            total = await self._sum_reports_for(v["id"])
             quota = float(v.get("quota_kg") or 0)
             pct = (total / quota * 100) if quota else 0
             if full_view:
@@ -140,35 +141,26 @@ class QueryMixin:
                 )
         return "\n".join(lines)
 
-    @staticmethod
-    def _active_mission_for(volunteer_id: str) -> dict | None:
-        rows = (
-            db.table("volunteer_missions")
-            .select("quota_kg, assigned_area, missions(*)")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-            .data
-            or []
+    async def _active_mission_for(self, volunteer_id):
+        """Active Mission entity for a volunteer, or None."""
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
-        for row in rows:
-            m = row.get("missions") or {}
-            if m.get("status") == "active":
-                return m
-        return None
 
-    @staticmethod
-    def _last_report_for(volunteer_id: str) -> dict | None:
-        rows = (
-            db.table("reports")
-            .select("kg_collected, location, reported_at")
-            .eq("volunteer_id", volunteer_id)
-            .order("reported_at", desc=True)
-            .limit(1)
-            .execute()
-            .data
-            or []
+        result = await build_mission_repository().get_active_for(
+            UUID(str(volunteer_id))
         )
-        return rows[0] if rows else None
+        return result[0] if result else None
+
+    async def _last_report_for(self, volunteer_id):
+        """Most recent Report entity for a volunteer, or None."""
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+        )
+
+        return await build_report_repository().latest_for_volunteer(
+            UUID(str(volunteer_id))
+        )
 
     @staticmethod
     def _days_left_to(deadline: str | None) -> int:
@@ -192,37 +184,31 @@ class QueryMixin:
             return "🚀", "Sudah mulai"
         return "⚪", "Belum mulai"
 
-    def _find_volunteer_in_message(self, message: str) -> dict | None:
-        candidates = (
-            db.table("volunteers")
-            .select("id, name, area, quota_kg, phone, telegram_id")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
+    async def _find_volunteer_in_message(self, message: str) -> dict | None:
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
+
+        candidates = await build_volunteer_query_repository().list_active()
         return self._find_target_by_name(message, candidates)
 
-    def _format_volunteer_detail(
+    async def _format_volunteer_detail(
         self, volunteer: dict, *, brief: bool = False
     ) -> str:
-        total = self._sum_reports_for(volunteer["id"])
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+        )
+
+        total = await self._sum_reports_for(volunteer["id"])
         quota = float(volunteer.get("quota_kg") or 0)
         pct = (total / quota * 100) if quota else 0
-        rows = (
-            db.table("reports")
-            .select("kg_collected, location, reported_at")
-            .eq("volunteer_id", volunteer["id"])
-            .order("reported_at", desc=True)
-            .limit(3)
-            .execute()
-            .data
-            or []
+        rows = await build_report_repository().list_for_volunteer(
+            UUID(str(volunteer["id"])), limit=3
         )
         last_lines = (
             "\n".join(
-                f"  • {r.get('reported_at', '')[:10]}: "
-                f"{float(r['kg_collected']):g} kg @ {r.get('location') or '-'}"
+                f"  • {r.reported_at.date().isoformat() if r.reported_at else '-'}: "
+                f"{r.kg_collected.value:g} kg @ {r.location or '-'}"
                 for r in rows
             )
             or "  (belum ada laporan)"
@@ -236,14 +222,11 @@ class QueryMixin:
             return head
         return f"{head}\n📅 Laporan terakhir:\n{last_lines}"
 
-    @staticmethod
-    def _sum_reports_for(volunteer_id: str) -> float:
-        rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-            .data
-            or []
+    async def _sum_reports_for(self, volunteer_id) -> float:
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
         )
-        return sum(float(r.get("kg_collected") or 0) for r in rows)
+
+        return await build_report_repository().total_kg_for_volunteer(
+            UUID(str(volunteer_id))
+        )

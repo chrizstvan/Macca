@@ -4,8 +4,6 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from backend.database.supabase_client import db
-
 from ..base_agent import COMPLEX_MODEL
 from ._constants import FAS_INTENTS, INTENT_CLASSIFY_PROMPT, REMIND_TEMPLATES, SUGGESTIONS
 
@@ -67,33 +65,22 @@ class CommandMixin:
     async def _handle_remind_slash(
         self, *, subtype: str | None, arg: str, only_non_reporters: bool = False
     ) -> str:
-        rows = (
-            db.table("volunteers")
-            .select("id, name, area, quota_kg, phone, telegram_id")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
+
+        rows = await build_volunteer_query_repository().list_active()
         if not rows:
             return "Belum ada volunteer aktif untuk dikirimi reminder."
 
         if only_non_reporters:
-            today_start = (
-                datetime.now(timezone.utc)
-                .replace(hour=0, minute=0, second=0, microsecond=0)
-                .isoformat()
+            from backend.infrastructure.composition_root import (
+                build_report_repository,
             )
-            reports_today = (
-                db.table("reports")
-                .select("volunteer_id")
-                .gte("reported_at", today_start)
-                .execute()
-                .data
-                or []
-            )
-            reported_ids = {r["volunteer_id"] for r in reports_today}
-            rows = [v for v in rows if v["id"] not in reported_ids]
+
+            reports_today = await build_report_repository().list_today()
+            reported_ids = {str(r.volunteer_id) for r in reports_today}
+            rows = [v for v in rows if str(v["id"]) not in reported_ids]
             if not rows:
                 return (
                     "✅ Semua volunteer sudah lapor hari ini — "
@@ -103,7 +90,7 @@ class CommandMixin:
         kind = subtype or "custom"
         recipients_named: list[str] = []
         for v in rows:
-            reported_kg = self._sum_reports_for(v["id"])
+            reported_kg = await self._sum_reports_for(v["id"])
             text = self._format_reminder_text(
                 kind=kind,
                 arg=arg,
@@ -167,53 +154,32 @@ class CommandMixin:
     # ------------------------------------------------------------------ #
 
     async def _handle_get_status(self) -> str:
-        volunteers = (
-            db.table("volunteers")
-            .select("id, name, area")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+            build_volunteer_query_repository,
         )
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        reports_today = (
-            db.table("reports")
-            .select("volunteer_id, kg_collected, location")
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        kg_total_today = sum(
-            float(r.get("kg_collected") or 0) for r in reports_today
-        )
-        reporters_today = {r["volunteer_id"] for r in reports_today}
+
+        volunteers = await build_volunteer_query_repository().list_active()
+        reports_repo = build_report_repository()
+        reports_today = await reports_repo.list_today()
+        kg_total_today = sum(r.kg_collected.value for r in reports_today)
+        reporters_today = {str(r.volunteer_id) for r in reports_today}
         non_reporters = [
             v.get("name", "?")
             for v in volunteers
-            if v["id"] not in reporters_today
+            if str(v["id"]) not in reporters_today
         ]
-        flagged = (
-            db.table("reports")
-            .select("id")
-            .eq("is_flagged", True)
-            .eq("verified", False)
-            .execute()
-            .data
-            or []
+        flagged_count = await reports_repo.count_flagged_unverified()
+        locations = sorted(
+            {(r.location or "").strip() for r in reports_today if r.location}
         )
-        locations = sorted({(r.get("location") or "").strip() for r in reports_today if r.get("location")})
 
         return (
             "📊 Status program hari ini:\n"
             f"📦 Total: {kg_total_today:g} kg\n"
             f"✅ Sudah lapor: {len(reporters_today)}/{len(volunteers)}\n"
             f"⚠️ Belum lapor: {', '.join(non_reporters[:10]) or '-'}\n"
-            f"🚩 Laporan flagged (perlu review): {len(flagged)}\n"
+            f"🚩 Laporan flagged (perlu review): {flagged_count}\n"
             f"📍 Area aktif: {', '.join(locations) or '-'}"
         )
 
@@ -225,31 +191,23 @@ class CommandMixin:
         return await ImpactAnalyzerAgent().process(message, context)
 
     async def _handle_flag_review(self) -> str:
-        rows = (
-            db.table("reports")
-            .select(
-                "id, kg_collected, location, flag_reason, reported_at, "
-                "volunteer_id"
-            )
-            .eq("is_flagged", True)
-            .eq("verified", False)
-            .order("reported_at", desc=True)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
         )
+
+        rows = await build_report_repository().list_flagged_unverified()
         if not rows:
             return "✅ Tidak ada laporan flagged yang perlu direview saat ini."
 
-        names = self._fetch_names_for(
-            [r["volunteer_id"] for r in rows if r.get("volunteer_id")]
+        names = await self._fetch_names_for(
+            [str(r.volunteer_id) for r in rows if r.volunteer_id]
         )
         lines = []
         for r in rows[:10]:
-            name = names.get(r.get("volunteer_id"), "?")
-            kg = float(r.get("kg_collected") or 0)
-            loc = r.get("location") or "-"
-            reason = r.get("flag_reason") or "tidak ada alasan tercatat"
+            name = names.get(str(r.volunteer_id), "?")
+            kg = r.kg_collected.value
+            loc = r.location or "-"
+            reason = r.flag_reason or "tidak ada alasan tercatat"
             lines.append(f"• {name}: {kg:g} kg @ {loc} — {reason}")
         return (
             f"🚩 Laporan flagged ({len(rows)} total, tampilkan 10 teratas):\n"
@@ -258,18 +216,12 @@ class CommandMixin:
         )
 
     @staticmethod
-    def _fetch_names_for(ids: list[str]) -> dict[str, str]:
-        if not ids:
-            return {}
-        rows = (
-            db.table("volunteers")
-            .select("id, name")
-            .in_("id", ids)
-            .execute()
-            .data
-            or []
+    async def _fetch_names_for(ids: list[str]) -> dict[str, str]:
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
-        return {r["id"]: r.get("name") or "?" for r in rows}
+
+        return await build_volunteer_query_repository().names_for(ids)
 
     # ------------------------------------------------------------------ #
     # Broadcast                                                            #
@@ -285,14 +237,11 @@ class CommandMixin:
         )
         if not text or len(text) < 5:
             return "Broadcast tidak terkirim. Ketik: 'broadcast: <pesan>' (minimum 5 karakter)."
-        rows = (
-            db.table("volunteers")
-            .select("id, name, phone, telegram_id")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
+
+        rows = await build_volunteer_query_repository().list_active()
         if not rows:
             return "Belum ada volunteer aktif sebagai penerima broadcast."
         for v in rows:
@@ -333,25 +282,20 @@ class CommandMixin:
                 "pengumpulan PET di Cikini sampai 30 Juli, kuota 20 kg.'"
             )
 
-        row = {
-            "title": title,
-            "description": payload.get("description") or "",
-            "status": "active",
-        }
-        deadline = payload.get("deadline")
-        if deadline:
-            row["deadline"] = deadline
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
+        )
 
         try:
-            inserted = (
-                db.table("missions").insert(row).execute().data or []
+            mission = await build_mission_repository().create(
+                title=title,
+                description=payload.get("description") or "",
+                deadline=payload.get("deadline"),
             )
         except Exception as exc:
             return f"Gagal membuat misi: {exc}"
 
-        if not inserted:
-            return "Gagal membuat misi (tidak ada baris dikembalikan)."
-        mid = inserted[0]["id"]
+        mid = str(mission.id)
         return (
             f"✅ Misi '{title}' dibuat (id={mid[:8]}...). "
             "Tambahkan assignment volunteer dengan: 'tugaskan <nama> ke "
@@ -388,13 +332,12 @@ class CommandMixin:
                 "'tugaskan Budi ke misi PET Cikini'."
             )
 
-        vol_rows = (
-            db.table("volunteers")
-            .select("id, name")
-            .ilike("name", f"%{volunteer_name}%")
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
+        )
+
+        vol_rows = await build_volunteer_query_repository().find_by_name(
+            volunteer_name
         )
         if not vol_rows:
             return f"Volunteer '{volunteer_name}' tidak ditemukan."
@@ -403,36 +346,32 @@ class CommandMixin:
             return f"Ada beberapa volunteer cocok: {names}. Sebutkan nama lengkap."
         volunteer = vol_rows[0]
 
-        mission_rows = (
-            db.table("missions")
-            .select("id, title")
-            .ilike("title", f"%{mission_hint}%")
-            .eq("status", "active")
-            .execute()
-            .data
-            or []
+        from uuid import UUID
+
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
+
+        missions_repo = build_mission_repository()
+        mission_rows = await missions_repo.find_active_by_title(mission_hint)
         if not mission_rows:
             return f"Misi yang cocok dengan '{mission_hint}' tidak ditemukan."
         mission = mission_rows[0]
 
         quota_kg = payload.get("quota_kg")
-        row = {
-            "volunteer_id": volunteer["id"],
-            "mission_id": mission["id"],
-            "assigned_area": mission_hint,
-        }
-        if quota_kg:
-            row["quota_kg"] = quota_kg
-
         try:
-            db.table("volunteer_missions").insert(row).execute()
+            await missions_repo.add_assignment(
+                volunteer_id=UUID(str(volunteer["id"])),
+                mission_id=mission.id,
+                assigned_area=mission_hint,
+                quota_kg=quota_kg,
+            )
         except Exception as exc:
             return f"Assignment gagal: {exc}"
 
         suffix = f" (kuota {quota_kg:g} kg)" if quota_kg else ""
         return (
-            f"✅ {volunteer['name']} ditugaskan ke misi '{mission['title']}'"
+            f"✅ {volunteer['name']} ditugaskan ke misi '{mission.title}'"
             f"{suffix}."
         )
 
@@ -461,66 +400,42 @@ class CommandMixin:
     async def get_morning_briefing(self) -> str:
         from backend.agents.services.notifications import alert_fasilitator
 
-        volunteers = (
-            db.table("volunteers")
-            .select("id, name")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+            build_volunteer_query_repository,
         )
+
+        volunteers = await build_volunteer_query_repository().list_active()
+
         yesterday_start = (
             datetime.now(timezone.utc) - timedelta(days=1)
-        ).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
+        ).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
         )
-        reports_yest = (
-            db.table("reports")
-            .select("volunteer_id, kg_collected")
-            .gte("reported_at", yesterday_start)
-            .lt("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        kg_yest = sum(float(r.get("kg_collected") or 0) for r in reports_yest)
-        reporters_yest = {r["volunteer_id"] for r in reports_yest}
+
+        reports_repo = build_report_repository()
+        reports_yest = await reports_repo.list_between(yesterday_start, today_start)
+        kg_yest = sum(r.kg_collected.value for r in reports_yest)
+        reporters_yest = {str(r.volunteer_id) for r in reports_yest}
         non_reporters = [
             v.get("name", "?")
             for v in volunteers
-            if v["id"] not in reporters_yest
+            if str(v["id"]) not in reporters_yest
         ]
 
         program_total = sum(
-            float(r.get("kg_collected") or 0)
-            for r in (
-                db.table("reports").select("kg_collected").execute().data or []
-            )
+            r.kg_collected.value for r in await reports_repo.list_all()
         )
-        target_kg = sum(
-            float(r.get("quota_kg") or 0)
-            for r in (
-                db.table("volunteer_missions")
-                .select("quota_kg")
-                .execute()
-                .data
-                or []
-            )
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
+
+        missions_repo = build_mission_repository()
+        target_kg = await missions_repo.total_assigned_quota()
         pct = (program_total / target_kg * 100) if target_kg else 0
 
-        flagged = (
-            db.table("reports")
-            .select("id")
-            .eq("is_flagged", True)
-            .eq("verified", False)
-            .execute()
-            .data
-            or []
-        )
+        flagged_count = await reports_repo.count_flagged_unverified()
 
         non_rep_str = (
             ", ".join(non_reporters[:6])
@@ -529,27 +444,15 @@ class CommandMixin:
             else "(semua sudah lapor 🎉)"
         )
 
-        active_missions = (
-            db.table("missions")
-            .select("title, deadline")
-            .eq("status", "active")
-            .execute()
-            .data
-            or []
-        )
-        now = datetime.now(timezone.utc)
+        active_missions = await missions_repo.list_active()
+        today = datetime.now(timezone.utc).date()
         deadline_lines: list[str] = []
         for m in active_missions:
-            raw = m.get("deadline")
-            if not raw:
+            if not m.deadline:
                 continue
-            try:
-                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            days_left = max((dt - now).days, 0)
+            days_left = max((m.deadline - today).days, 0)
             deadline_lines.append(
-                f"  • {m.get('title') or 'Misi'}: {days_left} hari lagi"
+                f"  • {m.title or 'Misi'}: {days_left} hari lagi"
             )
         deadline_block = (
             "\n⏰ Deadline misi aktif:\n" + "\n".join(deadline_lines)
@@ -564,7 +467,7 @@ class CommandMixin:
             f"📈 Kemarin: {kg_yest:g} kg dari {len(reporters_yest)} volunteer\n"
             f"✅ Sudah lapor kemarin: {len(reporters_yest)}/{len(volunteers)} "
             "volunteer\n"
-            f"⚠️ Perlu perhatian: {len(flagged)} laporan flagged\n"
+            f"⚠️ Perlu perhatian: {flagged_count} laporan flagged\n"
             f"🔔 Belum lapor: {non_rep_str}"
             f"{deadline_block}"
         )

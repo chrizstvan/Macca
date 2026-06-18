@@ -11,7 +11,6 @@ import re
 from typing import Any
 
 from backend.config import settings
-from backend.database.supabase_client import db
 from backend.utils.http_dispatcher import get_bytes, get_json, post_json
 from backend.utils.image_handler import ImageHandler
 from backend.utils.phone_utils import normalize_phone
@@ -38,6 +37,20 @@ MAIN_MENU_TRIGGERS = frozenset({
 MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
 MAIN_MENU_PROMPT_DEFAULT = "Halo! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
 MAIN_MENU_BUTTONS = ("📝 Lapor plastik", "📊 Lihat progress", "❓ Bantuan")
+
+# "Bantuan"/help — the ❓ menu button title plus typed variants. Matched on
+# the lowercased + stripped message, so the button emoji form is included.
+HELP_TRIGGERS = frozenset({
+    "bantuan", "❓ bantuan", "bantu", "help", "/help", "tolong",
+})
+HELP_MESSAGE = (
+    "Aku bisa bantu kamu 🌱\n"
+    "📝 *Lapor plastik* — catat hasil pengumpulanmu "
+    "(cth: \"lapor 5 kg di Menteng\")\n"
+    "📊 *Lihat progress* — cek total kg & peringkatmu\n"
+    "💬 *Tanya apa saja* seputar plastik, daur ulang, lingkungan, atau misimu\n\n"
+    "Pilih menu di bawah atau langsung ketik pertanyaanmu ya!"
+)
 
 
 class WhatsAppHandler(BaseChannelHandler):
@@ -107,6 +120,18 @@ class WhatsAppHandler(BaseChannelHandler):
             if not proceed_to_router:
                 return
 
+        # "Bantuan"/help button or keyword — reply with a capabilities message
+        # and re-surface the action buttons, instead of falling through to the
+        # off-topic gate. Same fasilitator/test-mode gating as the menu below.
+        if sender_phone and text.strip().lower() in HELP_TRIGGERS:
+            from backend.agents.router_agent import test_mode_state
+
+            if not self.is_fasilitator(sender_phone) or sender_phone in test_mode_state:
+                await self.send_buttons(
+                    sender_phone, HELP_MESSAGE, list(MAIN_MENU_BUTTONS)
+                )
+                return
+
         # Quick-menu trigger — short-circuit before router/LLM dispatch when
         # the sender types a menu keyword. Fires for volunteers, and for
         # the fasilitator ONLY while in /test_as impersonation so the
@@ -123,7 +148,7 @@ class WhatsAppHandler(BaseChannelHandler):
                 if in_test_mode:
                     from backend.agents.router_agent import RouterAgent
 
-                    impersonated = RouterAgent._get_volunteer_by_id(
+                    impersonated = await RouterAgent._get_volunteer_by_id(
                         test_mode_state[sender_phone]
                     )
                     if impersonated:
@@ -541,17 +566,15 @@ class WhatsAppHandler(BaseChannelHandler):
         """Quick lookup so uploaded photos get a human-readable filename."""
         if not phone:
             return None
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
+        )
+
         try:
-            rows = (
-                db.table("volunteers")
-                .select("name")
-                .eq("phone", normalize_phone(phone))
-                .limit(1)
-                .execute()
-                .data
-                or []
+            row = await build_volunteer_query_repository().get_by_phone(
+                normalize_phone(phone)
             )
         except Exception as exc:
             logger.warning("volunteer name lookup failed for %s: %s", phone, exc)
             return None
-        return (rows[0].get("name") if rows else None) or None
+        return (row.get("name") if row else None) or None

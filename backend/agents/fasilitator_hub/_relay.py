@@ -3,8 +3,6 @@
 import logging
 import re
 
-from backend.database.supabase_client import db
-
 logger = logging.getLogger(__name__)
 
 
@@ -105,7 +103,9 @@ class RelayMixin:
 
         data = entry.get("data") or {}
         target_id = data.get("target_volunteer_id")
-        target = self._relay_volunteer_by_id(target_id) if target_id else None
+        target = (
+            await self._relay_volunteer_by_id(target_id) if target_id else None
+        )
         if target is None:
             _pending_state.store.pop(
                 _pending_state.pending_key(context), None
@@ -247,14 +247,11 @@ class RelayMixin:
         """ilike + exact-match resolver. Returns single dict, list (ambiguous), or None."""
         if not name:
             return None
-        rows = (
-            db.table("volunteers")
-            .select("id, name, phone, telegram_id, area")
-            .ilike("name", f"%{name}%")
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
+
+        rows = await build_volunteer_query_repository().find_by_name(name)
         if not rows:
             return None
         if len(rows) == 1:
@@ -266,16 +263,11 @@ class RelayMixin:
         return rows
 
     @staticmethod
-    def _relay_volunteer_by_id(volunteer_id: str | None) -> dict | None:
+    async def _relay_volunteer_by_id(volunteer_id: str | None) -> dict | None:
         if not volunteer_id:
             return None
-        rows = (
-            db.table("volunteers")
-            .select("id, name, phone, telegram_id, area")
-            .eq("id", volunteer_id)
-            .limit(1)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
-        return rows[0] if rows else None
+
+        return await build_volunteer_query_repository().get_by_id(volunteer_id)

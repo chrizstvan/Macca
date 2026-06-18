@@ -1,4 +1,4 @@
-"""Telegram channel handler: routing rules, replies, registration, and commands.
+"""Telegram channel handler: routing rules, replies, and commands.
 
 # ------------------------------------------------------------------------- #
 # BOT SETUP IN GROUPS (Part I)                                               #
@@ -39,7 +39,6 @@ from backend.agents import (
     VolunteerSupportAgent,
 )
 from backend.config import settings
-from backend.database.supabase_client import db
 from backend.utils.image_handler import ImageHandler
 from backend.utils.query_utils import get_active_mission as _get_active_mission_shared
 
@@ -49,12 +48,9 @@ GROUP_CHAT_TYPES = ("group", "supergroup")
 GROUP_COMMANDS = ("/start", "/help", "/status", "/laporan")
 TELEGRAM_MAX_LEN = 4096
 
-NOT_REGISTERED_GROUP_MSG = (
-    "Halo! Kamu belum terdaftar. Silakan DM bot ini untuk registrasi."
-)
-WELCOME_ASK_NAME = (
-    "Selamat datang di Generasi Bebas Plastik! 🌱\n"
-    "Kamu belum terdaftar. Boleh saya tahu nama lengkap kamu?"
+NOT_REGISTERED_MSG = (
+    "Halo! Kamu belum terdaftar sebagai volunteer. "
+    "Hubungi fasilitatormu untuk didaftarkan ya 🙏"
 )
 HELP_MESSAGE = (
     "<b>Macca Bot — apa yang bisa saya bantu?</b>\n\n"
@@ -66,8 +62,6 @@ HELP_MESSAGE = (
     "Di DM: langsung ketik saja, saya selalu mendengarkan."
 )
 
-# In-memory registration state, keyed by telegram_id (Part F)
-pending_registrations: dict[int, dict] = {}
 
 _router: RouterAgent | None = None
 _image_handler: ImageHandler | None = None
@@ -214,24 +208,22 @@ def build_context(update: Update) -> dict:
     return ctx
 
 
-def _lookup_volunteer_name_by_tg(telegram_id: int | None) -> str | None:
+async def _lookup_volunteer_name_by_tg(telegram_id: int | None) -> str | None:
     """Lookup so Cloudinary public_id leads with the volunteer's name."""
     if not telegram_id:
         return None
+    from backend.infrastructure.composition_root import (
+        build_volunteer_query_repository,
+    )
+
     try:
-        rows = (
-            db.table("volunteers")
-            .select("name")
-            .eq("telegram_id", telegram_id)
-            .limit(1)
-            .execute()
-            .data
-            or []
+        row = await build_volunteer_query_repository().get_by_telegram_id(
+            telegram_id
         )
     except Exception as exc:
         logger.warning("volunteer name lookup failed for tg=%s: %s", telegram_id, exc)
         return None
-    return (rows[0].get("name") if rows else None) or None
+    return (row.get("name") if row else None) or None
 
 
 # ------------------------------------------------------------------------- #
@@ -254,56 +246,28 @@ async def send_fasilitator_alert(bot, alert_message: str) -> None:
 # Database helpers                                                           #
 # ------------------------------------------------------------------------- #
 
-def _get_volunteer(telegram_id: int) -> dict | None:
-    result = (
-        db.table("volunteers").select("*").eq("telegram_id", telegram_id).limit(1).execute()
+async def _get_volunteer(telegram_id: int) -> dict | None:
+    from backend.infrastructure.composition_root import (
+        build_volunteer_query_repository,
     )
-    return result.data[0] if result.data else None
+
+    return await build_volunteer_query_repository().get_by_telegram_id(
+        telegram_id
+    )
 
 
 _get_active_mission = _get_active_mission_shared
 
 
-def _total_collected_kg(volunteer_id: str) -> float:
-    result = (
-        db.table("reports").select("kg_collected").eq("volunteer_id", volunteer_id).execute()
+async def _total_collected_kg(volunteer_id: str) -> float:
+    from uuid import UUID
+
+    from backend.infrastructure.composition_root import (
+        build_report_repository,
     )
-    return sum(float(r["kg_collected"]) for r in result.data or [])
 
-
-# ------------------------------------------------------------------------- #
-# Part F — registration flow (DM only)                                       #
-# ------------------------------------------------------------------------- #
-
-async def _registration_step(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, clean_text: str
-) -> None:
-    """Two-step DM registration: ask for the name, then create the volunteer."""
-    telegram_id = update.effective_user.id
-    pending = pending_registrations.get(telegram_id)
-
-    if not pending or pending.get("step") != "waiting_name":
-        pending_registrations[telegram_id] = {"step": "waiting_name"}
-        await send_response(update, context, WELCOME_ASK_NAME)
-        return
-
-    name = clean_text.strip()
-    pending_registrations[telegram_id] = {"step": "done", "name": name}
-
-    # Schema requires a non-null area; the fasilitator assigns the real one later
-    db.table("volunteers").insert(
-        {"telegram_id": telegram_id, "name": name, "area": "pending_assignment"}
-    ).execute()
-
-    await send_response(
-        update,
-        context,
-        f"Terima kasih {name}! Pendaftaran berhasil 🎉\n"
-        f"Fasilitator akan segera mengassign area dan misimu.",
-    )
-    await send_fasilitator_alert(
-        context.bot,
-        f"👤 Volunteer baru: {name} (ID: {telegram_id}) — belum diassign area.",
+    return await build_report_repository().total_kg_for_volunteer(
+        UUID(str(volunteer_id))
     )
 
 
@@ -326,7 +290,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if message.photo:
         # Largest size; download + compress (max 1MB) + Cloudinary upload all
         # happen inside upload_from_telegram
-        volunteer_name = _lookup_volunteer_name_by_tg(ctx.get("telegram_id"))
+        volunteer_name = await _lookup_volunteer_name_by_tg(ctx.get("telegram_id"))
         ctx["photo_url"] = await _image_handler.upload_from_telegram(
             message.photo[-1].file_id,
             context.application,
@@ -352,12 +316,9 @@ async def _process_text(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
 
-    volunteer = _get_volunteer(ctx["telegram_id"])
+    volunteer = await _get_volunteer(ctx["telegram_id"])
     if volunteer is None:
-        if ctx["chat_type"] == "private":
-            await _registration_step(update, context, clean_text)
-        else:
-            await send_response(update, context, NOT_REGISTERED_GROUP_MSG)
+        await send_response(update, context, NOT_REGISTERED_MSG)
         return
 
     ctx["volunteer"] = volunteer
@@ -375,7 +336,7 @@ async def _process_text(
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Registration check for new users, welcome back for existing ones."""
-    volunteer = _get_volunteer(update.effective_user.id)
+    volunteer = await _get_volunteer(update.effective_user.id)
     if volunteer:
         await send_response(
             update,
@@ -383,10 +344,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Selamat datang kembali, <b>{volunteer['name']}</b>! 🌱\n"
             f"Ketik /status untuk lihat progress, atau /help untuk bantuan.",
         )
-    elif update.effective_chat.type == "private":
-        await _registration_step(update, context, "/start")
     else:
-        await send_response(update, context, NOT_REGISTERED_GROUP_MSG)
+        await send_response(update, context, NOT_REGISTERED_MSG)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -396,17 +355,12 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the volunteer's current mission progress from the database."""
-    volunteer = _get_volunteer(update.effective_user.id)
+    volunteer = await _get_volunteer(update.effective_user.id)
     if volunteer is None:
-        msg = (
-            NOT_REGISTERED_GROUP_MSG
-            if update.effective_chat.type in GROUP_CHAT_TYPES
-            else WELCOME_ASK_NAME
-        )
-        await send_response(update, context, msg)
+        await send_response(update, context, NOT_REGISTERED_MSG)
         return
 
-    total = _total_collected_kg(volunteer["id"])
+    total = await _total_collected_kg(volunteer["id"])
     quota = float(volunteer.get("quota_kg") or 0)
     mission = _get_active_mission(volunteer["id"])
 

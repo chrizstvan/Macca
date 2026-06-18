@@ -66,7 +66,7 @@ PHOTO_FIELDS = ("Foto", "Upload Foto", "Dokumentasi")
 NOTES_FIELDS = ("Catatan", "Keterangan", "Notes")
 
 ASK_FORMAT_MSG = (
-    "Boleh ulangi laporannya dengan format:\n"
+    "Boleh input laporannya dengan format:\n"
     "'Laporan [berat] kg [lokasi]'\n"
     "Contoh: 'Laporan 18 kg Menteng' 🙏"
 )
@@ -399,60 +399,33 @@ class ProgressTrackerAgent(BaseAgent):
                 "Fasilitator akan menginformasikan misi berikutnya ya 🙏"
             )
 
-        personal_reports = (
-            db.table("reports")
-            .select("kg_collected, location, reported_at")
-            .eq("volunteer_id", volunteer["id"])
-            .eq("mission_id", mission["id"])
-            .order("reported_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-        personal_total = sum(float(r["kg_collected"]) for r in personal_reports)
+        from uuid import UUID
 
-        program_rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .eq("mission_id", mission["id"])
-            .neq("verified", False)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
+            build_report_repository,
         )
-        program_total = sum(float(r["kg_collected"]) for r in program_rows)
 
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        today_rows = (
-            db.table("reports")
-            .select("volunteer_id")
-            .eq("mission_id", mission["id"])
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        today_count = len({r["volunteer_id"] for r in today_rows})
+        reports_repo = build_report_repository()
+        missions_repo = build_mission_repository()
+        vol_uuid = UUID(str(volunteer["id"]))
+        mission_uuid = UUID(str(mission["id"]))
 
-        assignments = (
-            db.table("volunteer_missions")
-            .select("quota_kg")
-            .eq("mission_id", mission["id"])
-            .execute()
-            .data
-            or []
+        personal_reports = await reports_repo.list_for_volunteer_in_mission(
+            vol_uuid, mission_uuid
         )
-        target = sum(float(a["quota_kg"] or 0) for a in assignments)
+        personal_total = sum(r.kg_collected.value for r in personal_reports)
+
+        program_total = await reports_repo.program_total_kg(mission_uuid)
+        today_count = await reports_repo.count_reporters_today(mission_uuid)
+        target = await missions_repo.assignment_quota_total(mission_uuid)
 
         quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
         pct = (personal_total / quota * 100) if quota else 0
 
         report_lines = [
-            f"• {r['reported_at'][:10]}: {float(r['kg_collected']):g} kg di {r['location']}"
+            f"• {r.reported_at.date().isoformat() if r.reported_at else '-'}: "
+            f"{r.kg_collected.value:g} kg di {r.location}"
             for r in personal_reports[:3]
         ]
         recent = "\n".join(report_lines) if report_lines else "• belum ada laporan"
