@@ -5,7 +5,6 @@ import logging
 from .base_agent import BaseAgent
 from .intent_registry import register_intent
 from .prompts.mission_briefing import BASE_PROMPT, SOP_SECTION
-from backend.database.supabase_client import db
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,7 @@ class MissionBriefingAgent(BaseAgent):
 
     async def _brief_fasilitator(self, message: str, context: dict) -> str:
         """Fasilitator-persona briefing: every active mission + every assignment."""
-        missions = self._fetch_active_missions_with_assignments()
+        missions = await self._fetch_active_missions_with_assignments()
         summary = self._format_fasilitator_briefing(missions)
         system_prompt = (
             BASE_PROMPT
@@ -118,23 +117,15 @@ class MissionBriefingAgent(BaseAgent):
         return response
 
     @staticmethod
-    def _fetch_active_missions_with_assignments() -> list[dict]:
-        active = (
-            db.table("missions").select("*").eq("status", "active").execute().data or []
+    async def _fetch_active_missions_with_assignments() -> list[dict]:
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
+
+        repo = build_mission_repository()
         out = []
-        for mission in active:
-            assignments = (
-                db.table("volunteer_missions")
-                .select(
-                    "quota_kg, reported_kg, assigned_area, "
-                    "volunteers(name, phone, telegram_id)"
-                )
-                .eq("mission_id", mission["id"])
-                .execute()
-                .data
-                or []
-            )
+        for mission in await repo.list_active():
+            assignments = await repo.list_assignments_with_names(mission.id)
             out.append({"mission": mission, "assignments": assignments})
         return out
 
@@ -146,16 +137,13 @@ class MissionBriefingAgent(BaseAgent):
         for entry in missions:
             mission = entry["mission"]
             lines.append(
-                f"Misi: {mission.get('title')} — deadline {mission.get('deadline')}"
+                f"Misi: {mission.title} — deadline {mission.deadline}"
             )
-            for assignment in entry["assignments"]:
-                volunteer = assignment.get("volunteers") or {}
-                quota = float(assignment.get("quota_kg") or 0)
-                reported = float(assignment.get("reported_kg") or 0)
+            for a in entry["assignments"]:
                 lines.append(
-                    f"  • {volunteer.get('name') or '?'} — "
-                    f"{reported:g}/{quota:g} kg @ "
-                    f"{assignment.get('assigned_area') or '-'}"
+                    f"  • {a['name']} — "
+                    f"{a['reported_kg']:g}/{a['quota_kg']:g} kg @ "
+                    f"{a['assigned_area']}"
                 )
         return "Data misi aktif:\n" + "\n".join(lines)
 

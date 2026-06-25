@@ -22,9 +22,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.database.supabase_client import db
-from backend.utils.date_utils import parse_iso_date
-
 from .base_agent import BaseAgent, COMPLEX_MODEL, DEFAULT_MODEL
 from .intent_registry import register_intent
 from .prompts.volunteer_support import (
@@ -310,28 +307,26 @@ class VolunteerSupportAgent(BaseAgent):
             )
 
         volunteer_id = volunteer.get("id")
-        mission, assignment = self._fetch_active_mission(volunteer_id)
+        mission, assignment = await self._fetch_active_mission(volunteer_id)
         reported_kg, weeks_active = await self._fetch_progress(
-            volunteer_id, mission.get("id") if mission else None
+            volunteer_id, str(mission.id) if mission else None
         )
 
         quota_kg = float(
-            (assignment or {}).get("quota_kg")
-            or (mission or {}).get("quota_kg")
-            or volunteer.get("quota_kg")
-            or 0
+            assignment.quota_kg.value
+            if assignment
+            else (volunteer.get("quota_kg") or 0)
         )
         pct = (reported_kg / quota_kg * 100) if quota_kg else 0
         area = (
-            (assignment or {}).get("assigned_area")
+            (assignment.assigned_area if assignment else None)
             or volunteer.get("area")
             or "-"
         )
         team_value = volunteer.get("team") or []
         team_str = ", ".join(team_value) if team_value else "belum ada data tim"
 
-        deadline_raw = (mission or {}).get("deadline")
-        deadline_date = parse_iso_date(deadline_raw)
+        deadline_date = mission.deadline if mission else None
         if deadline_date is not None:
             today = datetime.now(timezone.utc).date()
             days_left = (deadline_date - today).days
@@ -369,24 +364,20 @@ class VolunteerSupportAgent(BaseAgent):
         return "Belum mulai"
 
     @staticmethod
-    def _fetch_active_mission(
-        volunteer_id: str | None,
-    ) -> tuple[dict | None, dict | None]:
+    async def _fetch_active_mission(volunteer_id: str | None):
+        """Active (Mission, MissionAssignment) entities for a volunteer, or (None, None)."""
         if not volunteer_id:
             return None, None
-        rows = (
-            db.table("volunteer_missions")
-            .select("quota_kg, assigned_area, missions(*)")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-            .data
-            or []
+        from uuid import UUID
+
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
-        for row in rows:
-            mission = row.get("missions")
-            if mission and mission.get("status") == "active":
-                return mission, row
-        return None, None
+
+        result = await build_mission_repository().get_active_for(
+            UUID(str(volunteer_id))
+        )
+        return result if result is not None else (None, None)
 
     @staticmethod
     async def _fetch_progress(

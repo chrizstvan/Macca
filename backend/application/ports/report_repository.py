@@ -78,6 +78,9 @@ class ReportRepository(Protocol):
     ) -> list[Report]:
         """Reports with ``start <= reported_at < end``."""
 
+    async def total_kg_before(self, before: datetime) -> float:
+        """Sum of kg for all reports with ``reported_at < before``."""
+
     async def count_flagged_unverified(self) -> int:
         """Number of reports with is_flagged=True and verified=False."""
 

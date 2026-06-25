@@ -6,7 +6,10 @@ from uuid import UUID
 
 from supabase import Client
 
-from backend.application.ports.mission_repository import MissionRepository
+from backend.application.ports.mission_repository import (
+    AssignmentView,
+    MissionRepository,
+)
 from backend.domain.entities.mission import Mission, MissionAssignment
 
 from ._mappers import assignment_from_row, mission_from_row
@@ -66,6 +69,27 @@ class SupabaseMissionRepository(MissionRepository):
                 volunteer_id=UUID(r["volunteer_id"]),
                 mission_id=mission_id,
             )
+            for r in rows
+        ]
+
+    async def list_assignments_with_names(
+        self, mission_id: UUID
+    ) -> list[AssignmentView]:
+        rows = (
+            self._db.table("volunteer_missions")
+            .select("quota_kg, reported_kg, assigned_area, volunteers(name)")
+            .eq("mission_id", str(mission_id))
+            .execute()
+            .data
+            or []
+        )
+        return [
+            {
+                "name": (r.get("volunteers") or {}).get("name") or "?",
+                "quota_kg": float(r.get("quota_kg") or 0),
+                "reported_kg": float(r.get("reported_kg") or 0),
+                "assigned_area": r.get("assigned_area") or "-",
+            }
             for r in rows
         ]
 

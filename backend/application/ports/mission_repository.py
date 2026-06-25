@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, TypedDict
 from uuid import UUID
 
 from backend.domain.entities.mission import Mission, MissionAssignment
+
+
+class AssignmentView(TypedDict):
+    """Flat read DTO: one assignment joined with its volunteer's name."""
+
+    name: str
+    quota_kg: float
+    reported_kg: float
+    assigned_area: str
 
 
 class MissionRepository(Protocol):
@@ -19,6 +28,11 @@ class MissionRepository(Protocol):
     async def list_assignments(
         self, mission_id: UUID
     ) -> list[MissionAssignment]: ...
+
+    async def list_assignments_with_names(
+        self, mission_id: UUID
+    ) -> list[AssignmentView]:
+        """Assignments for a mission, each joined with the volunteer's name."""
 
     async def assignment_quota_total(self, mission_id: UUID) -> float:
         """Sum of assigned quota_kg for a mission (null/0 treated as 0)."""

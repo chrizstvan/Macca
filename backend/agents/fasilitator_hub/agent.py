@@ -2,7 +2,6 @@
 
 import logging
 
-from backend.database.supabase_client import db
 from backend.utils.query_utils import find_target_volunteer
 from backend.utils.ranking_calculator import RankingCalculator
 
@@ -165,15 +164,19 @@ class FasilitatorHubAgent(
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", reply, self.name)
             return reply
-        flagged = (
-            db.table("reports")
-            .select("kg_collected, location, flag_reason, reported_at")
-            .eq("is_flagged", True)
-            .eq("verified", False)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
         )
+
+        flagged = [
+            {
+                "kg_collected": r.kg_collected.value,
+                "location": r.location,
+                "flag_reason": r.flag_reason,
+                "reported_at": r.reported_at.isoformat() if r.reported_at else None,
+            }
+            for r in await build_report_repository().list_flagged_unverified()
+        ]
         extra = (
             f"\n\nVolunteers ({len(volunteers)}): {volunteers}"
             f"\nUnverified flagged reports ({len(flagged)}): {flagged}"

@@ -226,6 +226,17 @@ class SupabaseReportRepository(ReportRepository):
         )
         return [report_from_row(r) for r in rows]
 
+    async def total_kg_before(self, before: datetime) -> float:
+        rows = (
+            self._db.table("reports")
+            .select("kg_collected")
+            .lt("reported_at", before.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        return sum(float(r.get("kg_collected") or 0) for r in rows)
+
     async def count_flagged_unverified(self) -> int:
         rows = (
             self._db.table("reports")
