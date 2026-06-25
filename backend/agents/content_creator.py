@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.agents.services.notifications import alert_fasilitator
-from backend.database.supabase_client import db
 
 from .base_agent import BaseAgent, COMPLEX_MODEL
 from .intent_registry import register_intent
@@ -100,7 +99,7 @@ class ContentCreatorAgent(BaseAgent):
         platform = self._detect_platform(message)
         tone = self._detect_tone(message)
 
-        daily = self._aggregate_today()
+        daily = await self._aggregate_today()
         system_prompt = self._build_system_prompt(
             platform=platform, tone=tone, daily=daily
         )
@@ -137,7 +136,7 @@ class ContentCreatorAgent(BaseAgent):
         Called by the scheduler at 20:00 (cron set in ``backend/main.py``).
         Returns the generated content so callers + tests can inspect it.
         """
-        daily = self._aggregate_today()
+        daily = await self._aggregate_today()
         system_prompt = self._build_system_prompt(
             platform="instagram", tone="semangat", daily=daily
         )
@@ -266,32 +265,27 @@ class ContentCreatorAgent(BaseAgent):
     # Today aggregation                                                   #
     # ------------------------------------------------------------------ #
 
-    def _aggregate_today(self) -> dict[str, Any]:
-        now = datetime.now(timezone.utc)
-        today_start = now.replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).isoformat()
-
-        rows = (
-            db.table("reports")
-            .select("volunteer_id, kg_collected, location, reported_at")
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
+    async def _aggregate_today(self) -> dict[str, Any]:
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+            build_volunteer_query_repository,
         )
 
-        total_kg_today = sum(float(r.get("kg_collected") or 0) for r in rows)
-        active_volunteer_ids = {r.get("volunteer_id") for r in rows}
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        reports_repo = build_report_repository()
+        rows = await reports_repo.list_today()
+
+        total_kg_today = sum(r.kg_collected.value for r in rows)
+        active_volunteer_ids = {str(r.volunteer_id) for r in rows}
         locations = sorted(
-            {(r.get("location") or "").strip() for r in rows if r.get("location")}
+            {(r.location or "").strip() for r in rows if r.location}
         )
 
         kg_by_volunteer: dict[str, float] = defaultdict(float)
-        for row in rows:
-            kg_by_volunteer[row["volunteer_id"]] += float(
-                row.get("kg_collected") or 0
-            )
+        for r in rows:
+            kg_by_volunteer[str(r.volunteer_id)] += r.kg_collected.value
         top_volunteer_id: str | None = None
         top_volunteer_kg = 0.0
         if kg_by_volunteer:
@@ -301,20 +295,14 @@ class ContentCreatorAgent(BaseAgent):
 
         top_volunteer_name = ""
         if top_volunteer_id:
-            row = (
-                db.table("volunteers")
-                .select("name")
-                .eq("id", top_volunteer_id)
-                .limit(1)
-                .execute()
-                .data
-                or []
+            row = await build_volunteer_query_repository().get_by_id(
+                top_volunteer_id
             )
             if row:
-                top_volunteer_name = row[0].get("name") or ""
+                top_volunteer_name = row.get("name") or ""
 
         # Program totals: before-today + today = current. Detect milestone crossings.
-        program_before = self._sum_reports_before(today_start)
+        program_before = await reports_repo.total_kg_before(today_start)
         program_total_now = program_before + total_kg_today
         milestones = [
             t
@@ -337,14 +325,3 @@ class ContentCreatorAgent(BaseAgent):
             "co2_today": co2_today,
         }
 
-    @staticmethod
-    def _sum_reports_before(timestamp_iso: str) -> float:
-        rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .lt("reported_at", timestamp_iso)
-            .execute()
-            .data
-            or []
-        )
-        return sum(float(r.get("kg_collected") or 0) for r in rows)

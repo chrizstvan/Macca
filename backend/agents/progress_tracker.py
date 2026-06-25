@@ -5,7 +5,6 @@ broken out into dedicated services so this file can read top-to-bottom:
 
 * ``services/pending_state`` — multi-turn in-memory state with TTL.
 * ``services/notifications`` — Telegram / WhatsApp DM helpers.
-* ``services/report_repository`` — Supabase reads/writes for ``reports``.
 
 The legacy module-level symbols (``pending_reports``, ``_alert_fasilitator``,
 ``cleanup_expired_pending``, ...) are re-exported below so external imports
@@ -17,7 +16,6 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from backend.database.supabase_client import db
 from backend.utils.date_utils import format_hhmm as _shared_format_hhmm
 from backend.utils.impact_calculator import ImpactCalculator
 from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
@@ -25,7 +23,7 @@ from backend.utils.query_utils import get_active_mission as _shared_get_active_m
 from .base_agent import BaseAgent
 from .intent_registry import register_intent
 from .prompts.progress_tracker import PARSE_PROMPT
-from .services import pending_state, report_repository
+from .services import pending_state
 from .services.notifications import alert_fasilitator, notify_volunteer
 
 logger = logging.getLogger(__name__)
@@ -66,7 +64,7 @@ PHOTO_FIELDS = ("Foto", "Upload Foto", "Dokumentasi")
 NOTES_FIELDS = ("Catatan", "Keterangan", "Notes")
 
 ASK_FORMAT_MSG = (
-    "Boleh ulangi laporannya dengan format:\n"
+    "Boleh input laporannya dengan format:\n"
     "'Laporan [berat] kg [lokasi]'\n"
     "Contoh: 'Laporan 18 kg Menteng' 🙏"
 )
@@ -198,13 +196,13 @@ class ProgressTrackerAgent(BaseAgent):
                     else None
                 ) or {}
                 total = (
-                    self._sync_reported_kg(volunteer["id"], mission["id"])
+                    await self._sync_reported_kg(volunteer["id"], mission["id"])
                     if volunteer.get("id") and mission.get("id")
                     else 0
                 )
                 return f"✅ Ditambahkan! Total sekarang {total:g} kg\n\n" + confirmation
             if any(kw in choice for kw in CORRECTION_KEYWORDS):
-                return self._correct_report(entry["existing_report_id"], data, context)
+                return await self._correct_report(entry["existing_report_id"], data, context)
             # Neither keyword family matched — restore state and ask again
             # with explicit instructions.
             pending_reports[key] = entry
@@ -237,12 +235,21 @@ class ProgressTrackerAgent(BaseAgent):
             source=context.get("source") or context.get("channel", "telegram"),
         )
 
-    def _correct_report(self, report_id: str, data: dict, context: dict) -> str:
+    async def _correct_report(self, report_id: str, data: dict, context: dict) -> str:
+        from uuid import UUID
+
+        from backend.domain.value_objects.kg import Kg
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+        )
+
         old_kg = data.get("existing_kg")
-        update: dict = {"kg_collected": data["kg"], "location": data["location"]}
-        if data.get("photo_url"):
-            update["photo_url"] = data["photo_url"]
-        report_repository.update_report(report_id, update)
+        await build_report_repository().update(
+            UUID(str(report_id)),
+            kg=Kg(float(data["kg"])),
+            location=data["location"],
+            photo_url=data.get("photo_url"),
+        )
 
         volunteer = context.get("volunteer") or {}
         mission = context.get("mission") or (
@@ -251,7 +258,7 @@ class ProgressTrackerAgent(BaseAgent):
             else None
         ) or {}
         if volunteer.get("id") and mission.get("id"):
-            self._sync_reported_kg(volunteer["id"], mission["id"])
+            await self._sync_reported_kg(volunteer["id"], mission["id"])
         if old_kg is not None:
             return (
                 f"✅ Laporan dikoreksi dari {float(old_kg):g} kg "
@@ -399,60 +406,33 @@ class ProgressTrackerAgent(BaseAgent):
                 "Fasilitator akan menginformasikan misi berikutnya ya 🙏"
             )
 
-        personal_reports = (
-            db.table("reports")
-            .select("kg_collected, location, reported_at")
-            .eq("volunteer_id", volunteer["id"])
-            .eq("mission_id", mission["id"])
-            .order("reported_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-        personal_total = sum(float(r["kg_collected"]) for r in personal_reports)
+        from uuid import UUID
 
-        program_rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .eq("mission_id", mission["id"])
-            .neq("verified", False)
-            .execute()
-            .data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
+            build_report_repository,
         )
-        program_total = sum(float(r["kg_collected"]) for r in program_rows)
 
-        today_start = (
-            datetime.now(timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .isoformat()
-        )
-        today_rows = (
-            db.table("reports")
-            .select("volunteer_id")
-            .eq("mission_id", mission["id"])
-            .gte("reported_at", today_start)
-            .execute()
-            .data
-            or []
-        )
-        today_count = len({r["volunteer_id"] for r in today_rows})
+        reports_repo = build_report_repository()
+        missions_repo = build_mission_repository()
+        vol_uuid = UUID(str(volunteer["id"]))
+        mission_uuid = UUID(str(mission["id"]))
 
-        assignments = (
-            db.table("volunteer_missions")
-            .select("quota_kg")
-            .eq("mission_id", mission["id"])
-            .execute()
-            .data
-            or []
+        personal_reports = await reports_repo.list_for_volunteer_in_mission(
+            vol_uuid, mission_uuid
         )
-        target = sum(float(a["quota_kg"] or 0) for a in assignments)
+        personal_total = sum(r.kg_collected.value for r in personal_reports)
+
+        program_total = await reports_repo.program_total_kg(mission_uuid)
+        today_count = await reports_repo.count_reporters_today(mission_uuid)
+        target = await missions_repo.assignment_quota_total(mission_uuid)
 
         quota = float(mission.get("quota_kg") or volunteer.get("quota_kg") or 0)
         pct = (personal_total / quota * 100) if quota else 0
 
         report_lines = [
-            f"• {r['reported_at'][:10]}: {float(r['kg_collected']):g} kg di {r['location']}"
+            f"• {r.reported_at.date().isoformat() if r.reported_at else '-'}: "
+            f"{r.kg_collected.value:g} kg di {r.location}"
             for r in personal_reports[:3]
         ]
         recent = "\n".join(report_lines) if report_lines else "• belum ada laporan"
@@ -712,6 +692,13 @@ class ProgressTrackerAgent(BaseAgent):
             f"Progress total: {total_reported:g}/{quota:g} kg ({pct:.0f}%)\n"
             f"{status_line}"
         )
+
+        # Team mode — append rollup so volunteer sees the team total too.
+        team_line = await self._team_progress_line(
+            volunteer=volunteer, mission_id=report.mission_id
+        )
+        if team_line:
+            confirmation += "\n\n" + team_line
         if source == "google_form":
             confirmation += "\n\n📋 Laporan via form berhasil diterima!"
         if source == "fasilitator_relay":
@@ -725,57 +712,83 @@ class ProgressTrackerAgent(BaseAgent):
             )
         return confirmation
 
+    async def _team_progress_line(
+        self, *, volunteer: dict, mission_id
+    ) -> str:
+        """Render the team rollup line for ``volunteer`` if they are in a team.
+
+        Returns an empty string when the volunteer has no ``team`` set
+        (individual mission) — the caller can append unconditionally.
+        """
+        team = volunteer.get("team")
+        # Tolerate both ``text[]`` (legacy) and plain ``text`` columns.
+        if isinstance(team, list):
+            team = next((t for t in team if t and str(t).strip()), None)
+        if not team or not str(team).strip():
+            return ""
+
+        try:
+            from uuid import UUID
+
+            from backend.infrastructure.composition_root import build_team_repository
+
+            progress = await build_team_repository().get_progress(
+                team=str(team).strip(),
+                mission_id=mission_id if hasattr(mission_id, "hex") else UUID(str(mission_id)),
+            )
+        except Exception as exc:
+            logger.warning("team progress lookup failed: %s", exc)
+            return ""
+
+        if progress.member_count == 0:
+            return ""
+        return (
+            f"👥 Tim **{progress.team}** "
+            f"({progress.member_count} anggota): "
+            f"{progress.reported_kg:g}/{progress.total_quota_kg:g} kg "
+            f"({progress.pct:.0f}%)"
+        )
+
     async def _program_summary(self, context: dict) -> str:
         """Fasilitator-persona view: program-wide totals + who's behind on quota."""
-        missions = (
-            db.table("missions").select("*").eq("status", "active").execute().data
-            or []
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
+
+        missions_repo = build_mission_repository()
+        missions = await missions_repo.list_active()
         if not missions:
             return "Belum ada misi aktif. Tidak ada progress untuk dirangkum."
 
         chunks: list[str] = []
         for mission in missions:
-            assignments = (
-                db.table("volunteer_missions")
-                .select(
-                    "quota_kg, reported_kg, assigned_area, volunteers(name)"
-                )
-                .eq("mission_id", mission["id"])
-                .execute()
-                .data
-                or []
+            assignments = await missions_repo.list_assignments_with_names(
+                mission.id
             )
-            total_quota = sum(float(a.get("quota_kg") or 0) for a in assignments)
-            total_reported = sum(float(a.get("reported_kg") or 0) for a in assignments)
+            total_quota = sum(a["quota_kg"] for a in assignments)
+            total_reported = sum(a["reported_kg"] for a in assignments)
             pct = (total_reported / total_quota * 100) if total_quota else 0
 
-            behind: list[dict] = []
-            for assignment in assignments:
-                quota = float(assignment.get("quota_kg") or 0)
-                reported = float(assignment.get("reported_kg") or 0)
-                if quota > 0 and reported / quota < 0.5:
-                    behind.append(assignment)
+            behind = [
+                a
+                for a in assignments
+                if a["quota_kg"] > 0 and a["reported_kg"] / a["quota_kg"] < 0.5
+            ]
 
             lines = [
-                f"📊 *{mission.get('title')}*",
+                f"📊 *{mission.title}*",
                 f"Progress program: {total_reported:g}/{total_quota:g} kg ({pct:.1f}%)",
                 f"Volunteer ter-assign: {len(assignments)}",
                 f"Tertinggal (<50% kuota): {len(behind)}",
             ]
             if behind:
-                names = [
-                    (a.get("volunteers") or {}).get("name", "?") for a in behind[:10]
-                ]
+                names = [a["name"] for a in behind[:10]]
                 lines.append("Yang tertinggal: " + ", ".join(names))
             chunks.append("\n".join(lines))
 
         return "\n\n".join(chunks)
 
     _get_active_mission = staticmethod(_shared_get_active_mission)
-
-    _find_duplicate_today = staticmethod(report_repository.find_duplicate_today)
-    _find_latest_today = staticmethod(report_repository.find_latest_today)
 
     @staticmethod
     def _classify_duplicate(
@@ -818,4 +831,20 @@ class ProgressTrackerAgent(BaseAgent):
 
     _format_local_time = staticmethod(_shared_format_hhmm)
 
-    _sync_reported_kg = staticmethod(report_repository.sync_reported_kg)
+    async def _sync_reported_kg(self, volunteer_id, mission_id) -> float:
+        """Recompute the volunteer's mission total and mirror it onto
+        ``volunteer_missions.reported_kg``. Returns the new total."""
+        from uuid import UUID
+
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
+            build_report_repository,
+        )
+
+        vid = UUID(str(volunteer_id))
+        mid = UUID(str(mission_id))
+        total = await build_report_repository().total_kg_for(vid, mid)
+        await build_mission_repository().update_reported_kg(
+            volunteer_id=vid, mission_id=mid, total_kg=total
+        )
+        return total

@@ -7,7 +7,6 @@ from typing import Any
 import anthropic
 
 from backend.config import settings
-from backend.database.supabase_client import db
 from backend.utils.phone_utils import normalize_phone
 
 logger = logging.getLogger(__name__)
@@ -80,23 +79,19 @@ class BaseAgent(ABC):
     ) -> list:
         """Fetch the last ``limit`` messages for a user, oldest first.
 
+        Delegates to ``ChatHistoryRepository`` via the composition root.
         Returns ``[]`` when ``telegram_id`` is falsy (e.g. WhatsApp users —
         the chat_history table is keyed by Telegram bigint and has no phone
         column yet, so we skip persistence for non-Telegram channels until
         a schema update lands).
         """
-        if not telegram_id:
-            return []
-        result = (
-            db.table("chat_history")
-            .select("role, content")
-            .eq("telegram_id", telegram_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
+        from backend.infrastructure.composition_root import (
+            build_chat_history_repository,
         )
-        rows = result.data or []
-        return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+
+        return await build_chat_history_repository().get_recent(
+            telegram_id, limit=limit
+        )
 
     async def save_chat_history(
         self,
@@ -107,29 +102,26 @@ class BaseAgent(ABC):
     ) -> None:
         """Persist a single message to the chat_history table.
 
-        No-op when ``telegram_id`` is falsy — see get_chat_history for why.
+        Delegates to ``ChatHistoryRepository``. No-op when ``telegram_id``
+        is falsy — see get_chat_history for why.
         """
-        if not telegram_id:
-            return
-        db.table("chat_history").insert(
-            {
-                "telegram_id": telegram_id,
-                "role": role,
-                "content": content,
-                "agent_module": agent_module,
-            }
-        ).execute()
+        from backend.infrastructure.composition_root import (
+            build_chat_history_repository,
+        )
+
+        await build_chat_history_repository().save_turn(
+            telegram_id, role=role, content=content, agent_module=agent_module
+        )
 
     async def get_volunteer(self, telegram_id: int) -> dict[str, Any] | None:
         """Fetch a volunteer profile by Telegram ID, or None if not registered."""
-        result = (
-            db.table("volunteers")
-            .select("*")
-            .eq("telegram_id", telegram_id)
-            .limit(1)
-            .execute()
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
-        return result.data[0] if result.data else None
+
+        return await build_volunteer_query_repository().get_by_telegram_id(
+            telegram_id
+        )
 
     # Thin alias preserved for back-compat with subclasses that still call
     # ``self._normalize_phone``; the canonical implementation now lives in
@@ -141,14 +133,11 @@ class BaseAgent(ABC):
         normalized = normalize_phone(phone)
         if not normalized:
             return None
-        result = (
-            db.table("volunteers")
-            .select("*")
-            .eq("phone", normalized)
-            .limit(1)
-            .execute()
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
         )
-        return result.data[0] if result.data else None
+
+        return await build_volunteer_query_repository().get_by_phone(normalized)
 
     async def get_volunteer_flexible(self, context: dict) -> dict[str, Any] | None:
         """Look up a volunteer by phone (WhatsApp) first, then telegram_id.

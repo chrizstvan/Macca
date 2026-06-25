@@ -72,6 +72,9 @@ class BriefMission:
     history: ChatHistoryRepository
     llm: LLMClient
     clock: Clock
+    # Optional — when wired by the composition root, the system prompt
+    # includes a team rollup line for team-mode volunteers.
+    teams: Any = None
 
     async def execute(
         self,
@@ -104,12 +107,26 @@ class BriefMission:
             else 0.0
         )
 
+        team_progress = None
+        if (
+            self.teams is not None
+            and volunteer.is_team_mode
+            and mission is not None
+        ):
+            try:
+                team_progress = await self.teams.get_progress(
+                    team=volunteer.team or "", mission_id=mission.id
+                )
+            except Exception:
+                team_progress = None
+
         system_prompt = self._build_system_prompt(
             volunteer=volunteer,
             mission=mission,
             assignment=assignment,
             progress_kg=progress_kg,
             today=today,
+            team_progress=team_progress,
         )
 
         history = await self.history.get_recent(
@@ -144,8 +161,12 @@ class BriefMission:
         assignment: MissionAssignment | None,
         progress_kg: float,
         today: date,
+        team_progress: Any = None,
     ) -> str:
-        team = volunteer.team or []
+        team_label = (
+            volunteer.team if volunteer.is_team_mode else "—"
+        )
+        mode_label = "Tim" if volunteer.is_team_mode else "Individu"
         quota = (
             assignment.quota_kg.value
             if assignment is not None
@@ -161,9 +182,16 @@ class BriefMission:
             "Data volunteer:\n"
             f"- Nama: {volunteer.name}\n"
             f"- Area tugas: {area}\n"
-            f"- Tim: {', '.join(team) if team else 'belum ada data tim'}\n"
+            f"- Mode misi: {mode_label}\n"
+            f"- Tim: {team_label}\n"
             f"- Kuota: {quota:g} kg"
         )
+        if team_progress is not None and getattr(team_progress, "member_count", 0):
+            volunteer_section += (
+                "\n- Rollup tim: "
+                f"{team_progress.reported_kg:g}/{team_progress.total_quota_kg:g} kg "
+                f"({team_progress.pct:.0f}%) — {team_progress.member_count} anggota"
+            )
 
         if mission is not None:
             remaining = mission.days_until_deadline(today)

@@ -30,11 +30,13 @@ Macca/
 │   │
 │   ├── application/                     # Middle ring: use cases + ports.
 │   │   ├── ports/                       # Protocols the use cases need.
-│   │   │   ├── volunteer_repository.py
+│   │   │   ├── volunteer_repository.py        # entity (command side)
+│   │   │   ├── volunteer_query_repository.py   # dict read-model (query side)
 │   │   │   ├── mission_repository.py
 │   │   │   ├── report_repository.py
 │   │   │   ├── score_repository.py
 │   │   │   ├── chat_history_repository.py
+│   │   │   ├── fasilitator_context_repository.py
 │   │   │   ├── llm_client.py
 │   │   │   ├── outbound_sender.py
 │   │   │   ├── photo_verifier.py
@@ -62,13 +64,13 @@ Macca/
 │   │   ├── volunteer_support.py         # next to the class.
 │   │   ├── content_creator.py
 │   │   ├── impact_analyzer.py
-│   │   ├── fasilitator_hub.py
+│   │   ├── fasilitator_hub/             # Package: agent.py + mixins
+│   │   │                                #   (commands / consult / relay / queries)
 │   │   ├── intent_registry.py
 │   │   ├── prompts/                     # Per-agent system prompts.
 │   │   └── services/                    # Cross-cutting agent services:
 │   │       ├── pending_state.py         #   multi-turn in-memory store
-│   │       ├── notifications.py         #   WA-primary, TG-fallback alerts
-│   │       └── report_repository.py     #   legacy facade (kept for callers)
+│   │       └── notifications.py         #   WA-primary, TG-fallback alerts
 │   │
 │   ├── channels/                        # Inbound + outbound channel handlers.
 │   │   ├── base_handler.py              # InboundReceiver + OutboundSender
@@ -93,7 +95,9 @@ Macca/
 │   ├── main.py                          # FastAPI app + webhooks + scheduler.
 │   └── config.py                        # Singleton Settings.
 │
-├── dashboard/                           # Empty (planned).
+├── dashboard/                           # Streamlit fasilitator dashboard
+│                                        #   (volunteers, missions, reports,
+│                                        #   messages, ranking, content, persona).
 ├── .env.example
 └── .gitignore
 ```
@@ -109,8 +113,9 @@ Macca/
 * `infrastructure/` imports from `domain/`, `application/`, and vendor SDKs.
   Adapter classes implement the application ports structurally.
 * `agents/` and `channels/` are the **presentation layer**: they translate
-  webhook payloads ↔ use-case calls ↔ user-facing text. No direct DB writes
-  for migrated flows.
+  webhook payloads ↔ use-case / repository calls ↔ user-facing text. They make
+  **no `db.table(...)` calls at all** — every read/write goes through a
+  repository port obtained from `composition_root.build_xxx()`.
 * The composition root (`infrastructure/composition_root.py`) is the only
   module that knows concrete adapter classes. FastAPI routes / agents call
   `build_*()` helpers to obtain a wired-up use case.
@@ -155,8 +160,14 @@ ones being merged.
 | `SubmitReport` | Validates kg + location, classifies duplicates, runs photo verification, persists report, updates mission totals. | `Saved` / `NeedsPhoto` / `PhotoRejected` / `DuplicateClarificationNeeded` |
 | `BriefMission` | Loads volunteer profile + active mission + progress kg, enforces daily 2-query cap (via `Volunteer.consume_mission_query`), generates Claude reply, persists chat history. | `Brief(text, is_last_free_query)` / `QuotaCapped` / `NotRegistered` |
 
-Everything else still lives in the agent layer using the older direct-DB
-pattern. Migration order documented in commit history.
+These two encapsulate the heavier business logic (validation, duplicate
+classification, photo verification, quota enforcement). Every **other** agent
+path — progress/rank inquiries, fasilitator status/strategy/relay, analytics,
+content — now reads and writes exclusively through **repository ports**
+(`VolunteerQueryRepository`, `ReportRepository`, `MissionRepository`,
+`ChatHistoryRepository`, `FasilitatorContextRepository`) via
+`composition_root.build_xxx()`. No agent or channel touches `db.table(...)`
+directly.
 
 ---
 
@@ -268,23 +279,20 @@ text-only test cases don't hit Claude vision.
 * **Reasoning by layer.** Looking at `backend/domain/` tells you the
   business rules without grepping for `db.table(...)` calls.
 
-For migrated paths the data flow is:
+The data flow is the same for every path:
 
 ```
 WhatsApp/Telegram webhook
     → channel handler (parses payload)
     → router agent (classifies intent)
     → specialist agent (presentation)
-    → use case in application/
-    → ports (interfaces)
-    → infrastructure adapters
+    → use case (heavy business logic)  ─┐
+      or repository port (reads/writes) ─┤→ ports (interfaces)
+    → infrastructure adapters            ┘
     → Supabase / Anthropic / Meta
 ```
 
-For unmigrated agents the flow still goes:
-
-```
-... → specialist agent → db.table(...) + BaseAgent.call_claude(...)
-```
-
-Migration order and rationale documented in commit messages.
+The presentation layer is `db.table`-free: agents either invoke a use case or
+call a repository port, never the Supabase client directly. (LLM calls still
+use `BaseAgent.call_claude` on some paths and the `AnthropicLLMClient` adapter
+on others — that's an orthogonal, in-progress consolidation.)

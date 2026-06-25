@@ -15,6 +15,17 @@ class ChatTurn(TypedDict):
     content: str
 
 
+class ChatEntry(TypedDict):
+    role: str
+    content: str
+    created_at: str
+
+
+class UserChatRow(TypedDict):
+    telegram_id: int
+    content: str
+
+
 class ChatHistoryRepository(Protocol):
     async def get_recent(
         self, telegram_id: int | None, *, limit: int = 10
@@ -28,3 +39,11 @@ class ChatHistoryRepository(Protocol):
         content: str,
         agent_module: str,
     ) -> None: ...
+
+    async def list_recent_for(
+        self, telegram_id: int | None, *, since_iso: str, limit: int = 20
+    ) -> list[ChatEntry]:
+        """Recent turns for a user since ``since_iso`` (role, content, created_at), newest first."""
+
+    async def all_user_messages(self) -> list[UserChatRow]:
+        """Every user-role message program-wide (telegram_id, content)."""

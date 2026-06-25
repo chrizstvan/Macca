@@ -28,6 +28,20 @@ def _opt_uuid(value: Any) -> UUID | None:
     return None if value is None else _uuid(value)
 
 
+def _coerce_team(value: Any) -> str | None:
+    """Read ``volunteers.team`` whether the column is ``text`` or ``text[]``."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            if item and str(item).strip():
+                return str(item).strip()
+        return None
+    return str(value).strip() or None
+
+
 def volunteer_from_row(row: dict[str, Any]) -> Volunteer:
     quota = float(row.get("quota_kg") or 0) or 0.01  # Kg invariant > 0
     return Volunteer(
@@ -38,7 +52,7 @@ def volunteer_from_row(row: dict[str, Any]) -> Volunteer:
         phone=Phone.try_parse(row.get("phone")),
         telegram_id=row.get("telegram_id"),
         is_active=bool(row.get("is_active", True)),
-        team=list(row.get("team") or []),
+        team=_coerce_team(row.get("team")),
         mission_query_count=int(row.get("mission_query_count") or 0),
         mission_query_reset_at=parse_iso_date(row.get("mission_query_reset_at")),
         whatsapp_connected=bool(row.get("whatsapp_connected", False)),

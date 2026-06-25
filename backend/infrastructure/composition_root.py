@@ -32,8 +32,15 @@ from .persistence.supabase_unknown_contact_repo import (
 from .persistence.supabase_chat_history_repo import (
     SupabaseChatHistoryRepository,
 )
+from .persistence.supabase_fasilitator_context_repo import (
+    SupabaseFasilitatorContextRepository,
+)
 from .persistence.supabase_mission_repo import SupabaseMissionRepository
 from .persistence.supabase_report_repo import SupabaseReportRepository
+from .persistence.supabase_team_repo import SupabaseTeamRepository
+from .persistence.supabase_volunteer_query_repo import (
+    SupabaseVolunteerQueryRepository,
+)
 from .persistence.supabase_volunteer_repo import SupabaseVolunteerRepository
 from .system.utc_clock import UtcClock
 from .vision.photo_verifier_adapter import ClaudePhotoVerifier
@@ -65,6 +72,7 @@ def build_submit_report() -> SubmitReport:
 
 def build_brief_mission() -> BriefMission:
     return BriefMission(
+        teams=SupabaseTeamRepository(db),
         volunteers=SupabaseVolunteerRepository(db),
         missions=SupabaseMissionRepository(db),
         reports=SupabaseReportRepository(db),
@@ -118,6 +126,36 @@ def build_handle_inbound_contact() -> HandleInboundContact:
     )
 
 
+def build_team_repository() -> SupabaseTeamRepository:
+    """Read-only team-aggregate repo for confirmation / brief / status text."""
+    return SupabaseTeamRepository(db)
+
+
+def build_chat_history_repository() -> SupabaseChatHistoryRepository:
+    """Read/write chat_history repo for agent conversation persistence."""
+    return SupabaseChatHistoryRepository(db)
+
+
+def build_report_repository() -> SupabaseReportRepository:
+    """Read/write reports repo for agent inquiry + status paths."""
+    return SupabaseReportRepository(db)
+
+
+def build_mission_repository() -> SupabaseMissionRepository:
+    """Read/write missions + assignments repo for agent inquiry + status paths."""
+    return SupabaseMissionRepository(db)
+
+
+def build_fasilitator_context_repository() -> SupabaseFasilitatorContextRepository:
+    """Key/value store for fasilitator config (e.g. project description)."""
+    return SupabaseFasilitatorContextRepository(db)
+
+
+def build_volunteer_query_repository() -> SupabaseVolunteerQueryRepository:
+    """Read-model volunteer lookups (dict DTOs) for agent + channel read paths."""
+    return SupabaseVolunteerQueryRepository(db)
+
+
 __all__ = [
     "build_submit_report",
     "build_brief_mission",
@@ -126,4 +164,10 @@ __all__ = [
     "build_send_weekly_quiz",
     "build_handle_quiz_answer",
     "build_handle_inbound_contact",
+    "build_team_repository",
+    "build_chat_history_repository",
+    "build_report_repository",
+    "build_mission_repository",
+    "build_fasilitator_context_repository",
+    "build_volunteer_query_repository",
 ]

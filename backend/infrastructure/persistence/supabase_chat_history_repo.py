@@ -5,8 +5,10 @@ from __future__ import annotations
 from supabase import Client
 
 from backend.application.ports.chat_history_repository import (
+    ChatEntry,
     ChatHistoryRepository,
     ChatTurn,
+    UserChatRow,
 )
 
 
@@ -52,3 +54,30 @@ class SupabaseChatHistoryRepository(ChatHistoryRepository):
                 "agent_module": agent_module,
             }
         ).execute()
+
+    async def list_recent_for(
+        self, telegram_id: int | None, *, since_iso: str, limit: int = 20
+    ) -> list[ChatEntry]:
+        if not telegram_id:
+            return []
+        return (
+            self._db.table("chat_history")
+            .select("role, content, created_at")
+            .eq("telegram_id", telegram_id)
+            .gte("created_at", since_iso)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+
+    async def all_user_messages(self) -> list[UserChatRow]:
+        return (
+            self._db.table("chat_history")
+            .select("telegram_id, content")
+            .eq("role", "user")
+            .execute()
+            .data
+            or []
+        )

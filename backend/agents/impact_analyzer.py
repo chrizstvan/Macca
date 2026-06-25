@@ -18,7 +18,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.agents.services.notifications import alert_fasilitator
-from backend.database.supabase_client import db
 from backend.utils.impact_calculator import ImpactCalculator
 
 from .base_agent import BaseAgent, COMPLEX_MODEL
@@ -105,7 +104,7 @@ class ImpactAnalyzerAgent(BaseAgent):
 
         report_type = self._detect_report_type(message)
         output_format = self._detect_output_format(message)
-        data = self._aggregate(report_type)
+        data = await self._aggregate(report_type)
 
         system_prompt = self._build_system_prompt(
             report_type=report_type,
@@ -136,7 +135,7 @@ class ImpactAnalyzerAgent(BaseAgent):
 
     async def weekly_report(self) -> str:
         """Generate the Monday 08:00 weekly report and DM the fasilitator."""
-        data = self._aggregate("weekly")
+        data = await self._aggregate("weekly")
         system_prompt = self._build_system_prompt(
             report_type="weekly", output_format="default", data=data
         )
@@ -258,36 +257,42 @@ class ImpactAnalyzerAgent(BaseAgent):
     # Aggregation                                                         #
     # ------------------------------------------------------------------ #
 
-    def _aggregate(self, report_type: str) -> dict[str, Any]:
+    async def _aggregate(self, report_type: str) -> dict[str, Any]:
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+            build_volunteer_query_repository,
+        )
+
         now = datetime.now(timezone.utc)
         period_start, period_end, prev_start, prev_end, period_label = (
             self._period_bounds(report_type, now)
         )
 
-        period_rows = self._fetch_reports(period_start, period_end)
+        reports_repo = build_report_repository()
+        volunteers_repo = build_volunteer_query_repository()
+
+        period_rows = await reports_repo.list_between(period_start, period_end)
         prev_rows = (
-            self._fetch_reports(prev_start, prev_end)
+            await reports_repo.list_between(prev_start, prev_end)
             if prev_start is not None
             else []
         )
 
-        program_kg = self._sum_reports_before(now.isoformat())
-        period_kg = sum(float(r.get("kg_collected") or 0) for r in period_rows)
-        prev_kg = sum(float(r.get("kg_collected") or 0) for r in prev_rows)
+        program_kg = await reports_repo.total_kg_before(now)
+        period_kg = sum(r.kg_collected.value for r in period_rows)
+        prev_kg = sum(r.kg_collected.value for r in prev_rows)
 
         # Volunteer aggregation (period)
         kg_by_volunteer: dict[str, float] = defaultdict(float)
-        for row in period_rows:
-            kg_by_volunteer[row["volunteer_id"]] += float(
-                row.get("kg_collected") or 0
-            )
+        for r in period_rows:
+            kg_by_volunteer[str(r.volunteer_id)] += r.kg_collected.value
         per_area_map: dict[str, float] = defaultdict(float)
-        for row in period_rows:
-            loc = (row.get("location") or "unknown").strip() or "unknown"
-            per_area_map[loc] += float(row.get("kg_collected") or 0)
+        for r in period_rows:
+            loc = (r.location or "unknown").strip() or "unknown"
+            per_area_map[loc] += r.kg_collected.value
         per_area = sorted(per_area_map.items(), key=lambda kv: kv[1], reverse=True)
 
-        names_by_id = self._fetch_volunteer_names(list(kg_by_volunteer))
+        names_by_id = await volunteers_repo.names_for(list(kg_by_volunteer))
         ranked = sorted(
             ((names_by_id.get(vid, "?"), kg) for vid, kg in kg_by_volunteer.items()),
             key=lambda kv: kv[1],
@@ -296,17 +301,17 @@ class ImpactAnalyzerAgent(BaseAgent):
         top_volunteers = ranked[:5]
         bottom_volunteers = list(reversed(ranked[-3:])) if len(ranked) > 3 else []
 
-        active_volunteers = self._fetch_active_volunteers()
+        active_volunteers = await volunteers_repo.list_active()
         total_active_volunteers = len(active_volunteers)
         reporters_ids = set(kg_by_volunteer.keys())
         non_reporters = [
             v["name"]
             for v in active_volunteers
-            if v["id"] not in reporters_ids
+            if str(v["id"]) not in reporters_ids
         ]
 
         # Milestones crossed during period (using program totals)
-        program_before_period = self._sum_reports_before(period_start.isoformat())
+        program_before_period = await reports_repo.total_kg_before(period_start)
         program_at_period_end = program_before_period + period_kg
         milestones = [
             t
@@ -371,55 +376,6 @@ class ImpactAnalyzerAgent(BaseAgent):
         )
         return epoch, now, prev_start, prev_end, "keseluruhan program"
 
-    @staticmethod
-    def _fetch_reports(start: datetime, end: datetime) -> list[dict]:
-        return (
-            db.table("reports")
-            .select("volunteer_id, kg_collected, location, reported_at")
-            .gte("reported_at", start.isoformat())
-            .lt("reported_at", end.isoformat())
-            .execute()
-            .data
-            or []
-        )
-
-    @staticmethod
-    def _sum_reports_before(timestamp_iso: str) -> float:
-        rows = (
-            db.table("reports")
-            .select("kg_collected")
-            .lt("reported_at", timestamp_iso)
-            .execute()
-            .data
-            or []
-        )
-        return sum(float(r.get("kg_collected") or 0) for r in rows)
-
-    @staticmethod
-    def _fetch_volunteer_names(ids: list[str]) -> dict[str, str]:
-        if not ids:
-            return {}
-        rows = (
-            db.table("volunteers")
-            .select("id, name")
-            .in_("id", ids)
-            .execute()
-            .data
-            or []
-        )
-        return {r["id"]: r.get("name") or "?" for r in rows}
-
-    @staticmethod
-    def _fetch_active_volunteers() -> list[dict]:
-        rows = (
-            db.table("volunteers")
-            .select("id, name")
-            .eq("is_active", True)
-            .execute()
-            .data
-            or []
-        )
-        return rows
 
     @staticmethod
     def _format_trend(current_kg: float, prev_kg: float) -> str:

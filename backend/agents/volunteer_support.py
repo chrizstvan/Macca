@@ -22,9 +22,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.database.supabase_client import db
-from backend.utils.date_utils import parse_iso_date
-
 from .base_agent import BaseAgent, COMPLEX_MODEL, DEFAULT_MODEL
 from .intent_registry import register_intent
 from .prompts.volunteer_support import (
@@ -47,6 +44,9 @@ ALLOWED_TOPICS = (
     # Greetings — bare hello-style messages should reach the agent so it
     # can reply with a personalised status / opening line.
     "halo", "hai", "hi ", "mulai", "menu", "/start",
+    # Help / "what can you do" — must reach the agent (capabilities reply),
+    # never the off-topic gate.
+    "bantuan", "bantu", "tolong", "help",
     # Emotional-state keywords — make sure quit / crisis signals always
     # reach the agent so the situation classifier can fire.
     "berhenti", "keluar", "nyerah", "menyerah", "mundur",
@@ -193,7 +193,7 @@ class VolunteerSupportAgent(BaseAgent):
             ):
                 return OFF_TOPIC_RESPONSE
 
-        volunteer_block = self._build_volunteer_block(volunteer)
+        volunteer_block = await self._build_volunteer_block(volunteer)
         system_prompt = build_system_prompt(volunteer_block)
 
         situation = await self._classify_situation(message)
@@ -298,7 +298,7 @@ class VolunteerSupportAgent(BaseAgent):
     # Volunteer data block                                                #
     # ------------------------------------------------------------------ #
 
-    def _build_volunteer_block(self, volunteer: dict | None) -> str:
+    async def _build_volunteer_block(self, volunteer: dict | None) -> str:
         if volunteer is None:
             return (
                 "=== DATA VOLUNTEER ===\n"
@@ -307,28 +307,26 @@ class VolunteerSupportAgent(BaseAgent):
             )
 
         volunteer_id = volunteer.get("id")
-        mission, assignment = self._fetch_active_mission(volunteer_id)
-        reported_kg, weeks_active = self._fetch_progress(
-            volunteer_id, mission.get("id") if mission else None
+        mission, assignment = await self._fetch_active_mission(volunteer_id)
+        reported_kg, weeks_active = await self._fetch_progress(
+            volunteer_id, str(mission.id) if mission else None
         )
 
         quota_kg = float(
-            (assignment or {}).get("quota_kg")
-            or (mission or {}).get("quota_kg")
-            or volunteer.get("quota_kg")
-            or 0
+            assignment.quota_kg.value
+            if assignment
+            else (volunteer.get("quota_kg") or 0)
         )
         pct = (reported_kg / quota_kg * 100) if quota_kg else 0
         area = (
-            (assignment or {}).get("assigned_area")
+            (assignment.assigned_area if assignment else None)
             or volunteer.get("area")
             or "-"
         )
         team_value = volunteer.get("team") or []
         team_str = ", ".join(team_value) if team_value else "belum ada data tim"
 
-        deadline_raw = (mission or {}).get("deadline")
-        deadline_date = parse_iso_date(deadline_raw)
+        deadline_date = mission.deadline if mission else None
         if deadline_date is not None:
             today = datetime.now(timezone.utc).date()
             days_left = (deadline_date - today).days
@@ -366,47 +364,45 @@ class VolunteerSupportAgent(BaseAgent):
         return "Belum mulai"
 
     @staticmethod
-    def _fetch_active_mission(
-        volunteer_id: str | None,
-    ) -> tuple[dict | None, dict | None]:
+    async def _fetch_active_mission(volunteer_id: str | None):
+        """Active (Mission, MissionAssignment) entities for a volunteer, or (None, None)."""
         if not volunteer_id:
             return None, None
-        rows = (
-            db.table("volunteer_missions")
-            .select("quota_kg, assigned_area, missions(*)")
-            .eq("volunteer_id", volunteer_id)
-            .execute()
-            .data
-            or []
+        from uuid import UUID
+
+        from backend.infrastructure.composition_root import (
+            build_mission_repository,
         )
-        for row in rows:
-            mission = row.get("missions")
-            if mission and mission.get("status") == "active":
-                return mission, row
-        return None, None
+
+        result = await build_mission_repository().get_active_for(
+            UUID(str(volunteer_id))
+        )
+        return result if result is not None else (None, None)
 
     @staticmethod
-    def _fetch_progress(
+    async def _fetch_progress(
         volunteer_id: str | None, mission_id: str | None
     ) -> tuple[float, int]:
         """Return ``(reported_kg, weeks_active)`` for a single volunteer."""
         if not volunteer_id:
             return 0.0, 0
-        query = (
-            db.table("reports")
-            .select("kg_collected, reported_at")
-            .eq("volunteer_id", volunteer_id)
-        )
-        if mission_id:
-            query = query.eq("mission_id", mission_id)
-        rows = query.execute().data or []
-        total_kg = sum(float(r.get("kg_collected") or 0) for r in rows)
+        from uuid import UUID
 
-        timestamps = [
-            datetime.fromisoformat(str(r["reported_at"]).replace("Z", "+00:00"))
-            for r in rows
-            if r.get("reported_at")
-        ]
+        from backend.infrastructure.composition_root import (
+            build_report_repository,
+        )
+
+        repo = build_report_repository()
+        vid = UUID(str(volunteer_id))
+        if mission_id:
+            rows = await repo.list_for_volunteer_in_mission(
+                vid, UUID(str(mission_id))
+            )
+        else:
+            rows = await repo.list_for_volunteer(vid)
+        total_kg = sum(r.kg_collected.value for r in rows)
+
+        timestamps = [r.reported_at for r in rows if r.reported_at]
         if timestamps:
             earliest = min(timestamps)
             now = datetime.now(timezone.utc)
