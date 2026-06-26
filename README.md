@@ -208,9 +208,15 @@ ngrok http --domain=<your-reserved-domain> 8000
 | `WHATSAPP_PHONE_NUMBER_ID` | for WA | Meta Cloud API phone number ID |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | for WA | Meta WABA ID |
 | `WHATSAPP_ACCESS_TOKEN` | for WA | Bearer token (24h temp or 60d System User) |
-| `WHATSAPP_VERIFY_TOKEN` | for WA | Shared secret for webhook handshake |
+| `WHATSAPP_VERIFY_TOKEN` | for WA | Shared secret for the GET webhook handshake |
+| `WHATSAPP_APP_SECRET` | for WA (prod) | Meta **App Secret** — verifies the `X-Hub-Signature-256` HMAC on inbound webhooks. Set this to reject forged events. |
 | `FASILITATOR_PHONE` | for WA | Fasilitator's WhatsApp number (628…) |
 | `FASILITATOR_TELEGRAM_ID` | for TG | Fasilitator's Telegram chat ID |
+| `TELEGRAM_WEBHOOK_SECRET` | for TG (prod) | Random secret; pass to `setWebhook(secret_token=…)` and the backend checks the `X-Telegram-Bot-Api-Secret-Token` header. |
+| `GOOGLE_FORM_SECRET` | for form (prod) | Shared secret the Apps Script relay sends as the `X-Form-Secret` header. |
+| `ADMIN_TOKEN` | for dashboard | Bearer token guarding `/admin/*`. In `production` an empty value disables those endpoints (fail-closed). |
+| `ENVIRONMENT` | optional | `development` (default) \| `production`. Production makes admin auth fail-closed and missing webhook secrets a logged error. |
+| `CORS_ALLOW_ORIGINS` | optional | Comma-separated browser origins allowed to call the API (default `http://localhost:8501`). Webhooks are server-to-server and need no CORS. |
 | `ACTIVE_CHANNEL` | optional | `telegram` \| `whatsapp` \| `both` (default `telegram`) |
 | `TEST_MODE_ENABLED` | optional | Allow `/test_as` impersonation (default `true`) |
 

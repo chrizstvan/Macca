@@ -1,5 +1,8 @@
 """Macca FastAPI application: Telegram webhook entry point."""
 
+import hashlib
+import hmac
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -99,15 +102,23 @@ app = FastAPI(title="Macca", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_allow_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
 @app.post("/webhook")
-async def webhook(request: Request) -> dict:
+async def webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+) -> dict:
     """Receive a Telegram Update JSON payload and dispatch it to the bot handlers."""
+    _verify_webhook_secret(
+        secret=settings.telegram_webhook_secret,
+        provided=x_telegram_bot_api_secret_token,
+        label="Telegram",
+    )
     payload = await request.json()
     update = Update.de_json(payload, application.bot)
     if update:
@@ -116,8 +127,16 @@ async def webhook(request: Request) -> dict:
 
 
 @app.post("/webhook/google-form")
-async def google_form_webhook(request: Request) -> dict:
+async def google_form_webhook(
+    request: Request,
+    x_form_secret: str | None = Header(default=None),
+) -> dict:
     """Receive a Google Form submission (relayed by Apps Script) and record the report."""
+    _verify_webhook_secret(
+        secret=settings.google_form_secret,
+        provided=x_form_secret,
+        label="Google Form",
+    )
     payload = await request.json()
     phone = str(payload.get("phone") or "").strip()
 
@@ -167,18 +186,40 @@ async def whatsapp_verify(request: Request) -> Response:
 
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request) -> dict:
+async def whatsapp_webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(default=None),
+) -> dict:
     """Receive a WhatsApp Cloud API event and dispatch any inbound message.
 
-    We ack 200 immediately, then dispatch in the background. Meta's webhook
-    contract expects a response in under ~20 s — slow Sonnet calls
-    (impact_analyzer, content_creator, fasilitator_hub) blow past that and
-    cause Meta to retry, which used to result in the same report being
-    generated 2-3 times.
+    We verify Meta's ``X-Hub-Signature-256`` HMAC over the raw body, then ack
+    200 immediately and dispatch in the background. Meta's webhook contract
+    expects a response in under ~20 s — slow Sonnet calls (impact_analyzer,
+    content_creator, fasilitator_hub) blow past that and cause Meta to retry,
+    which used to result in the same report being generated 2-3 times.
     """
     import asyncio as _asyncio
 
-    payload = await request.json()
+    raw = await request.body()
+    secret = settings.whatsapp_app_secret
+    if secret:
+        expected = "sha256=" + hmac.new(
+            secret.encode(), raw, hashlib.sha256
+        ).hexdigest()
+        if not x_hub_signature_256 or not hmac.compare_digest(
+            x_hub_signature_256, expected
+        ):
+            logger.warning("WhatsApp webhook signature rejected")
+            raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    elif _is_production():
+        logger.error(
+            "WHATSAPP_APP_SECRET not configured in production — webhook unverified"
+        )
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
 
     async def _dispatch() -> None:
         try:
@@ -205,15 +246,50 @@ async def health() -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def _is_production() -> bool:
+    return settings.environment == "production"
+
+
 def _require_admin(authorization: str | None) -> None:
-    """Validate the bearer token when ``ADMIN_TOKEN`` is configured."""
+    """Validate the admin bearer token (constant-time).
+
+    Fail-closed in production: a missing ``ADMIN_TOKEN`` there refuses the
+    request rather than serving it openly. In development an empty token
+    leaves the endpoint open for localhost convenience.
+    """
     expected = getattr(settings, "admin_token", "") or ""
     if not expected:
-        return  # No token configured → endpoint open (local dev)
+        if _is_production():
+            raise HTTPException(
+                status_code=503, detail="Admin endpoints disabled: ADMIN_TOKEN not set"
+            )
+        return  # dev only
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    if authorization.split(" ", 1)[1].strip() != expected:
+    provided = authorization.split(" ", 1)[1].strip()
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+def _verify_webhook_secret(
+    *, secret: str, provided: str | None, label: str
+) -> None:
+    """Enforce a webhook shared secret with a constant-time compare.
+
+    When ``secret`` is set, a missing/mismatched value raises 403. When it is
+    unset we allow the request (dev), but in production log an error so the
+    gap is visible — webhook secrets must be configured for prod.
+    """
+    if not secret:
+        if _is_production():
+            logger.error(
+                "%s webhook secret not configured in production — request unverified",
+                label,
+            )
+        return
+    if not provided or not hmac.compare_digest(provided, secret):
+        logger.warning("%s webhook signature/secret rejected", label)
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
 
 @app.post("/admin/reminders/send")
