@@ -49,8 +49,21 @@ class Settings:
     active_channel: str = "telegram"
 
     # Streamlit dashboard admin bearer token. Empty → admin endpoints open
-    # (useful for localhost). Set ADMIN_TOKEN in .env for production.
+    # in development only; in production an empty token makes them fail closed.
     admin_token: str = ""
+
+    # Deployment environment. ``production`` makes admin auth fail closed and
+    # turns missing webhook secrets into loud errors.
+    environment: str = "development"
+
+    # Webhook authenticity secrets — enforced whenever set.
+    whatsapp_app_secret: str = ""       # Meta app secret → X-Hub-Signature-256 HMAC
+    telegram_webhook_secret: str = ""   # X-Telegram-Bot-Api-Secret-Token header
+    google_form_secret: str = ""        # shared secret from the Apps Script relay
+
+    # Browser origins allowed to call the API (the dashboard). Webhooks are
+    # server-to-server and don't need CORS. Comma-separated env override.
+    cors_allow_origins: list[str] = ["http://localhost:8501"]
 
     # Whether a volunteer can query data about another volunteer (limited
     # fields). Default off — only the fasilitator sees peer data.
@@ -112,6 +125,17 @@ class Settings:
 
         # Dashboard admin token (optional)
         self.admin_token = os.getenv("ADMIN_TOKEN", "")
+
+        # Deployment environment + webhook authenticity secrets
+        self.environment = os.getenv("ENVIRONMENT", "development").lower().strip()
+        self.whatsapp_app_secret = os.getenv("WHATSAPP_APP_SECRET", "")
+        self.telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+        self.google_form_secret = os.getenv("GOOGLE_FORM_SECRET", "")
+        self.cors_allow_origins = [
+            o.strip()
+            for o in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:8501").split(",")
+            if o.strip()
+        ]
 
         # Active channel
         active_channel = os.getenv("ACTIVE_CHANNEL", "telegram").lower().strip()

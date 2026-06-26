@@ -31,7 +31,7 @@ _INBOUND_SEEN_MAX = 256
 # Words that surface the quick-action menu. Lowercased + stripped before match.
 MAIN_MENU_TRIGGERS = frozenset({
     "menu", "mulai", "home", "start", "hi", "hello", "halo", "hallo", "yo", "yow",
-    "pagi", "siang", "sore", "malam", "malem" "kembali", "back",
+    "pagi", "siang", "sore", "malam", "malem", "kembali", "back",
     "/menu", "/mulai", "/start", "/home",
 })
 MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
