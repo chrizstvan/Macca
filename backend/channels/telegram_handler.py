@@ -53,7 +53,7 @@ NOT_REGISTERED_MSG = (
     "Hubungi fasilitatormu untuk didaftarkan ya 🙏"
 )
 HELP_MESSAGE = (
-    "<b>Macca Bot — apa yang bisa saya bantu?</b>\n\n"
+    "<b>Chris-Fasil-GBP Bot — apa yang bisa saya bantu?</b>\n\n"
     "• Kirim laporan: <code>laporan [berat] kg [lokasi]</code>\n"
     "• /status — progress misi kamu saat ini\n"
     "• /laporan — format laporan\n"

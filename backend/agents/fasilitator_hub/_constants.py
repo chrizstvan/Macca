@@ -4,6 +4,11 @@ import re
 
 LEADERBOARD_KEYWORDS = ("ranking", "leaderboard", "peringkat", "rank")
 
+# Action-item reminder flow (generate draft → approve → schedule). Matched on
+# free-form text BEFORE intent classification so it isn't swallowed by the
+# generic ``send_reminder`` progress-nudge path.
+REMINDER_REQUEST_KEYWORDS = ("reminder", "ingetin", "ingatkan", "pengingat")
+
 STRATEGY_KEYWORDS = (
     "strategi", "saran", "ide", "gimana cara", "bagaimana cara",
     "pendapat", "rekomendasi", "menurut kamu", "menurut mu",
@@ -40,6 +45,17 @@ PSYCH_KEYWORDS = (
 
 DRAFT_PATTERN = re.compile(
     r"\b(?:draftkan|drafkan|draft|buatkan|buat)\s+(?:pesan\s+)?(?:untuk\s+)?([A-Za-z][\w'.-]+(?:\s+[A-Za-z][\w'.-]+)?)",
+    re.IGNORECASE,
+)
+
+# Natural-language invite/send: "undang Sari", "ajak Budi", "invite Rina",
+# "kirim undangan untuk Rina" → draft + confirm + WhatsApp send.
+# Distinct from DRAFT_PATTERN (draft-only): these verbs mean "actually send".
+INVITE_PATTERN = re.compile(
+    r"\b(?:undang|ajak|invite|kirim(?:kan)?)\s+"
+    r"(?:pesan\s+|undangan\s+|invitation\s+)?"
+    r"(?:untuk\s+|kepada\s+|ke\s+)?"
+    r"([A-Za-z][\w'.-]+(?:\s+[A-Za-z][\w'.-]+)?)",
     re.IGNORECASE,
 )
 

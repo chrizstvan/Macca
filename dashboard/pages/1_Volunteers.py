@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from utils import theme  # noqa: E402,F401 (auto-installs Plotly defaults)
+from utils import api, theme  # noqa: E402,F401 (auto-installs Plotly defaults)
 from utils.db import (  # noqa: E402
     clear_caches,
     get_volunteers,
@@ -81,15 +81,16 @@ st.caption(f"{len(view)} dari {len(df)} volunteer")
 
 if not view.empty:
     st.caption(
-        "💡 Kolom **Tim** bisa diedit langsung — kosongkan untuk **misi "
-        "individu**, isi nama tim untuk **misi tim**. Klik 'Simpan perubahan "
-        "tim' setelah edit."
+        "💡 Kolom **Aktif**, **Area**, **Kuota**, dan **Tim** bisa diedit "
+        "langsung. Nonaktifkan **Aktif** untuk menghentikan reminder/misi "
+        "tanpa menghapus data. Kosongkan **Tim** untuk **misi individu**, isi "
+        "nama tim untuk **misi tim**. Klik 'Simpan perubahan' setelah edit."
     )
 
     edit_cols = [
         c
         for c in (
-            "name", "phone", "area", "quota_kg",
+            "name", "phone", "area", "quota_kg", "is_active",
             "team", "whatsapp_connected", "last_contact_at",
         )
         if c in view.columns
@@ -98,6 +99,10 @@ if not view.empty:
     # Ensure team is a string-like column so the data_editor renders an
     # empty cell as "" rather than NaN.
     editable_df["team"] = editable_df["team"].fillna("").astype(str)
+    if "is_active" in editable_df.columns:
+        editable_df["is_active"] = (
+            editable_df["is_active"].fillna(False).astype(bool)
+        )
 
     edited = st.data_editor(
         editable_df,
@@ -107,6 +112,13 @@ if not view.empty:
             "phone": st.column_config.TextColumn("Nomor HP", disabled=True),
             "area": st.column_config.TextColumn("Area"),
             "quota_kg": st.column_config.NumberColumn("Kuota (kg)", min_value=1),
+            "is_active": st.column_config.CheckboxColumn(
+                "Aktif",
+                help=(
+                    "Centang untuk mengaktifkan volunteer. Nonaktifkan untuk "
+                    "menghentikan reminder / penugasan misi tanpa menghapus data."
+                ),
+            ),
             "team": st.column_config.TextColumn(
                 "Tim",
                 help=(
@@ -133,7 +145,7 @@ if not view.empty:
     )
 
     save_cols = st.columns([1, 2])
-    if save_cols[0].button("💾 Simpan perubahan tim", type="primary", key="team_save_btn"):
+    if save_cols[0].button("💾 Simpan perubahan", type="primary", key="team_save_btn"):
         edits = 0
         errors: list[str] = []
         # Compare row-by-row against the unedited view; persist any column
@@ -151,6 +163,8 @@ if not view.empty:
                 patch["area"] = (new_row.get("area") or "").strip() or None
             if int(new_row.get("quota_kg") or 0) != int(orig_row.get("quota_kg") or 0):
                 patch["quota_kg"] = int(new_row.get("quota_kg") or 0)
+            if bool(new_row.get("is_active")) != bool(orig_row.get("is_active")):
+                patch["is_active"] = bool(new_row.get("is_active"))
             if not patch:
                 continue
             try:
@@ -227,6 +241,36 @@ if not view.empty:
                 except Exception as exc:
                     st.error(f"Gagal: {exc}")
 
+    # ---- Bulk activate / deactivate ---------------------------------- #
+    with st.expander("🔘 Bulk: aktifkan / nonaktifkan volunteer"):
+        active_names = st.multiselect(
+            "Pilih volunteer",
+            options=view["name"].dropna().tolist(),
+            key="active_bulk_names",
+        )
+        ac1, ac2 = st.columns(2)
+
+        def _bulk_set_active(is_active: bool) -> None:
+            if not active_names:
+                st.warning("Pilih minimal satu volunteer.")
+                return
+            ids = view[view["name"].isin(active_names)]["id"].tolist()
+            try:
+                supabase.table("volunteers").update(
+                    {"is_active": is_active}
+                ).in_("id", ids).execute()
+                clear_caches()
+                label = "diaktifkan" if is_active else "dinonaktifkan"
+                st.success(f"✅ {len(ids)} volunteer {label}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Gagal: {exc}")
+
+        if ac1.button("✅ Aktifkan yang dipilih", key="active_bulk_on"):
+            _bulk_set_active(True)
+        if ac2.button("⛔ Nonaktifkan yang dipilih", key="active_bulk_off"):
+            _bulk_set_active(False)
+
 
 # --------------------------------------------------------------------------- #
 # ADD VOLUNTEER FORM                                                           #
@@ -238,20 +282,29 @@ with st.expander("➕ Tambah Volunteer Baru"):
         f1, f2 = st.columns(2)
         name = f1.text_input("Nama Lengkap *")
         phone = f2.text_input("Nomor HP *", placeholder="08123456789")
-        f3, f4 = st.columns(2)
-        area = f3.text_input("Area Tugas *", placeholder="Menteng")
-        quota = f4.number_input("Kuota (kg)", value=20, min_value=1)
+        area = st.text_input(
+            "Area Tugas", placeholder="Kosongkan → default Jakarta"
+        )
         team = st.text_input("Tim", placeholder="Nama1, Nama2, Nama3")
         telegram_id = st.text_input(
             "Telegram ID (opsional)",
             placeholder="cth. 123456789 — hanya jika volunteer pakai Telegram",
         )
+        send_welcome = st.checkbox(
+            "📨 Kirim pesan welcome (WhatsApp template) setelah simpan",
+            value=False,
+            help=(
+                "Pakai template WA yang sudah di-approve Meta — bisa menjangkau "
+                "volunteer walau belum pernah chat bot. Di mode Dev, nomor harus "
+                "sudah di-whitelist di Meta dashboard."
+            ),
+        )
         submitted = st.form_submit_button("Simpan Volunteer")
 
         if submitted:
             tg_raw = telegram_id.strip()
-            if not name or not phone or not area:
-                st.error("Nama, nomor HP, dan area wajib diisi!")
+            if not name or not phone:
+                st.error("Nama dan nomor HP wajib diisi!")
             elif tg_raw and not tg_raw.isdigit():
                 st.error("Telegram ID harus berupa angka (atau kosongkan).")
             else:
@@ -259,8 +312,7 @@ with st.expander("➕ Tambah Volunteer Baru"):
                 payload = {
                     "name": name.strip(),
                     "phone": normalized,
-                    "area": area.strip(),
-                    "quota_kg": int(quota),
+                    "area": area.strip() or "Jakarta",
                     "is_active": True,
                 }
                 if team.strip():
@@ -268,9 +320,18 @@ with st.expander("➕ Tambah Volunteer Baru"):
                 if tg_raw:
                     payload["telegram_id"] = int(tg_raw)
                 try:
-                    supabase.table("volunteers").insert(payload).execute()
+                    res = supabase.table("volunteers").insert(payload).execute()
                     clear_caches()
+                    new_id = (res.data or [{}])[0].get("id")
                     st.success(f"✅ {name} berhasil didaftarkan!")
+                    if send_welcome and new_id:
+                        try:
+                            api.send_welcome_template(str(new_id))
+                            st.success("📨 Pesan welcome (template) terkirim.")
+                        except Exception as exc:
+                            st.warning(
+                                f"Volunteer tersimpan, tapi welcome gagal terkirim: {exc}"
+                            )
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Gagal simpan: {exc}")

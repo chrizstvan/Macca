@@ -166,6 +166,125 @@ async def _weekly_report_job() -> None:
     await ImpactAnalyzerAgent().weekly_report()
 
 
+def _expand_recipients(recipient_filter: str) -> list[dict]:
+    """Resolve a ``recipient_filter`` to active-volunteer rows.
+
+    Mirrors the filter logic in ``/admin/messages/schedule``: ``all`` (default)
+    is every active volunteer; ``non_reporters`` / "yang belum lapor" drops
+    anyone who already reported today.
+    """
+    from backend.database.supabase_client import db
+
+    rows = (
+        db.table("volunteers")
+        .select("id, name, phone, telegram_id")
+        .eq("is_active", True)
+        .execute()
+        .data
+        or []
+    )
+    if (recipient_filter or "all").lower() in {"yang belum lapor", "non_reporters"}:
+        today_iso = (
+            datetime.now(timezone.utc)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .isoformat()
+        )
+        reported_ids = {
+            r["volunteer_id"]
+            for r in (
+                db.table("reports")
+                .select("volunteer_id")
+                .gte("reported_at", today_iso)
+                .execute()
+                .data
+                or []
+            )
+        }
+        rows = [v for v in rows if v["id"] not in reported_ids]
+    return rows
+
+
+async def _dispatch_quiz_row(repo, row: dict, quiz: dict) -> None:
+    """Broadcast a scheduled quiz + mark its draft sent."""
+    from backend.infrastructure.composition_root import (
+        build_broadcast_quiz_now,
+        build_quiz_draft_repository,
+    )
+
+    try:
+        result = await build_broadcast_quiz_now().execute(quiz)
+        sent = result.recipients_dispatched
+        status = "sent"
+    except Exception as exc:
+        logger.warning("scheduled quiz %s broadcast failed: %s", row.get("id"), exc)
+        sent, status = 0, "failed"
+
+    await repo.mark(row["id"], status)
+    quiz_id = row.get("quiz_id")
+    if quiz_id and status == "sent":
+        try:
+            await build_quiz_draft_repository().update_status(quiz_id, "sent")
+        except Exception as exc:
+            logger.warning("quiz draft %s status update failed: %s", quiz_id, exc)
+    logger.info("scheduled quiz %s broadcast to %d volunteer(s)", row.get("id"), sent)
+
+
+async def _scheduled_messages_job() -> None:
+    """Dispatch due ``scheduled_messages`` rows (fasilitator reminders).
+
+    Every minute: pick ``pending`` rows whose ``scheduled_at`` has passed,
+    expand the recipient filter, send the templated text via
+    ``notify_volunteer``, then mark the row ``sent`` (or ``failed`` when no
+    recipient received it). A single bad row never blocks the others. Queue
+    access goes through ``ScheduledMessageRepository``; only volunteer
+    expansion stays on the shared scheduler ``db`` reads.
+    """
+    from backend.agents.services.notifications import notify_volunteer
+    from backend.infrastructure.composition_root import (
+        build_scheduled_message_repository,
+    )
+
+    repo = build_scheduled_message_repository()
+    try:
+        due = await repo.list_due(datetime.now(timezone.utc))
+    except Exception as exc:
+        logger.warning("scheduled_messages poll failed: %s", exc)
+        return
+
+    for row in due:
+        # Quiz rows broadcast via the quiz use case (creates active_quizzes so
+        # answers feed ranking) instead of the plain text path.
+        quiz = row.get("quiz")
+        if quiz:
+            await _dispatch_quiz_row(repo, row, quiz)
+            continue
+
+        text = (row.get("message_template") or row.get("content") or "").strip()
+        if not text:
+            await repo.mark(row["id"], "failed")
+            continue
+
+        recipients = _expand_recipients(row.get("recipient_filter") or "all")
+        sent = 0
+        for volunteer in recipients:
+            # {nama} placeholder is filled per-recipient at send time.
+            personal = text.replace("{nama}", volunteer.get("name") or "")
+            try:
+                await notify_volunteer(volunteer, personal)
+                sent += 1
+            except Exception as exc:
+                logger.warning(
+                    "scheduled_messages send failed for %s: %s",
+                    volunteer.get("name"), exc,
+                )
+
+        await repo.mark(row["id"], "sent" if sent else "failed")
+        logger.info(
+            "scheduled_messages %s dispatched to %d/%d recipient(s)",
+            row.get("id"), sent, len(recipients),
+        )
+
+
 DEFAULT_JOBS: tuple[dict, ...] = (
     {
         "id": "daily_reminder",
@@ -186,6 +305,11 @@ DEFAULT_JOBS: tuple[dict, ...] = (
         "id": "weekly_report",
         "func": _weekly_report_job,
         "cron": "0 8 * * 1",  # Mon 08:00 WIB
+    },
+    {
+        "id": "scheduled_messages_dispatch",
+        "func": _scheduled_messages_job,
+        "cron": "* * * * *",  # every minute — flush due reminders
     },
 )
 

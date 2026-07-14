@@ -45,6 +45,15 @@ class RelayMixin:
         the parsed data is parked in pending state and the fasilitator is
         prompted to send the photo OR reply 'no photo' / 'tanpa foto'.
         """
+        # Feature flag — same ``enable_reporting`` switch blocks relay too.
+        from backend.agents.services.reporting_flag import (
+            is_reporting_enabled,
+            reporting_off_message,
+        )
+
+        if not await is_reporting_enabled():
+            return await reporting_off_message()
+
         kg, target_name, location = self._relay_parse(message)
         if kg is None or target_name is None:
             return (
@@ -100,6 +109,14 @@ class RelayMixin:
     ) -> str:
         """Finish a parked relay-save: photo arrived OR 'no photo' typed."""
         from backend.agents.services import pending_state as _pending_state
+        from backend.agents.services.reporting_flag import (
+            is_reporting_enabled,
+            reporting_off_message,
+        )
+
+        if not await is_reporting_enabled():
+            _pending_state.store.pop(_pending_state.pending_key(context), None)
+            return await reporting_off_message()
 
         data = entry.get("data") or {}
         target_id = data.get("target_volunteer_id")

@@ -133,6 +133,14 @@ class ImpactAnalyzerAgent(BaseAgent):
     # Scheduled weekly report                                             #
     # ------------------------------------------------------------------ #
 
+    async def impact_stats(self, message: str = "minggu ini") -> dict:
+        """Public stats aggregate for on-demand impact drafts.
+
+        Resolves the period from the fasilitator's phrasing ("minggu ini",
+        "bulan ini", …) and returns the same dict shape as the report builder.
+        """
+        return await self._aggregate(self._detect_report_type(message))
+
     async def weekly_report(self) -> str:
         """Generate the Monday 08:00 weekly report and DM the fasilitator."""
         data = await self._aggregate("weekly")

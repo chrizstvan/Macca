@@ -13,9 +13,24 @@ from ..prompts.fasilitator_hub import (
     STRATEGY_GUIDANCE,
     SYSTEM_PROMPT,
 )
-from ._constants import AT_RISK_KEYWORDS, PROJECT_CONTEXT_PATTERNS, QA_SYSTEM_PROMPT
+from ._constants import (
+    AT_RISK_KEYWORDS,
+    INVITE_PATTERN,
+    PROJECT_CONTEXT_PATTERNS,
+    QA_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
+
+# Pending step for the natural-language invite → confirm → send flow.
+INVITE_CONFIRM_STEP = "fasilitator_invite_waiting_confirm"
+
+# Fasilitator replies that confirm / cancel a parked invite draft.
+_INVITE_CONFIRM_VOCAB = (
+    "kirim", "kirim sekarang", "kirimkan", "ya", "iya", "ok", "oke", "sip",
+    "gas", "send", "yes", "y",
+)
+_INVITE_CANCEL_VOCAB = ("batal", "cancel", "stop", "gajadi", "gak jadi", "ga jadi")
 
 
 class ConsultMixin:
@@ -33,8 +48,16 @@ class ConsultMixin:
             return (
                 "Format: `/qa [pertanyaan]` atau `/qa 628xxxxxxxxx: [pertanyaan]`"
             )
+        from ..services.challenge_context import build_active_challenge_block
+
+        challenge_block = build_active_challenge_block()
+        qa_prompt = (
+            f"{QA_SYSTEM_PROMPT}\n\n{challenge_block}"
+            if challenge_block
+            else QA_SYSTEM_PROMPT
+        )
         answer = await self.call_claude(
-            QA_SYSTEM_PROMPT,
+            qa_prompt,
             [{"role": "user", "content": question}],
             max_tokens=400,
         )
@@ -75,6 +98,103 @@ class ConsultMixin:
         return (
             f"✅ Pesan terkirim ke {normalized}:\n_{preview}_"
         )
+
+    # ------------------------------------------------------------------ #
+    # Natural-language invite → draft → confirm → WhatsApp send            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _is_invite_request(message: str) -> bool:
+        """Cheap gate: does the message look like 'undang/ajak/invite/kirim <name>'?"""
+        return bool(message and INVITE_PATTERN.search(message))
+
+    async def _handle_invite_request(
+        self, message: str, context: dict
+    ) -> str | None:
+        """Draft a personalised invite and park it for a *kirim* confirmation.
+
+        Returns ``None`` when no known volunteer is named in the message, so the
+        caller falls through to the normal pipeline (avoids hijacking generic
+        'kirim ...' phrases that aren't about a volunteer).
+        """
+        from backend.infrastructure.composition_root import (
+            build_volunteer_query_repository,
+        )
+
+        volunteers = await build_volunteer_query_repository().list_all()
+        target = self._find_target_by_name(message, volunteers)
+        if target is None:
+            return None
+
+        phone = target.get("phone")
+        name = target.get("name") or "?"
+        if not phone:
+            return (
+                f"{name} belum punya nomor WhatsApp di database, jadi tidak bisa "
+                "dikirimi undangan. Tambahkan nomornya lewat dashboard dulu ya."
+            )
+
+        context_block = await self._build_psych_block(target)
+        system_prompt = SYSTEM_PROMPT + DRAFT_GUIDANCE + context_block
+        prompt = (
+            f"Tulis pesan undangan/ajakan singkat untuk {name} berdasarkan "
+            f"permintaan fasilitator: \"{message.strip()}\". Gunakan data progress "
+            "+ riwayat chat di context untuk personalisasi. Keluarkan isi pesannya "
+            "saja, siap dikirim."
+        )
+        draft = (
+            await self.call_claude(
+                system_prompt,
+                [{"role": "user", "content": prompt}],
+                model=COMPLEX_MODEL,
+                max_tokens=400,
+            )
+        ).strip()
+
+        from backend.agents.services import pending_state as _pending_state
+
+        _pending_state.set_pending(
+            _pending_state.pending_key(context),
+            INVITE_CONFIRM_STEP,
+            {"phone": phone, "name": name, "draft": draft},
+        )
+        return (
+            f"✉️ Draft undangan untuk {name} (WA {self._normalize_phone(phone)}):\n\n"
+            f"{draft}\n\n"
+            "Balas *kirim* untuk kirim sekarang, atau *batal* untuk membatalkan."
+        )
+
+    async def _resume_invite_send(
+        self, *, message: str, context: dict, entry: dict
+    ) -> str:
+        """Finish a parked invite: *kirim* sends via WhatsApp, *batal* cancels."""
+        from backend.agents.services import pending_state as _pending_state
+
+        data = entry.get("data") or {}
+        phone = data.get("phone")
+        name = data.get("name") or "?"
+        draft = data.get("draft") or ""
+        lower = (message or "").strip().lower()
+
+        key = _pending_state.pending_key(context)
+        is_cancel = lower in _INVITE_CANCEL_VOCAB or any(
+            lower.startswith(kw) for kw in _INVITE_CANCEL_VOCAB
+        )
+        if is_cancel:
+            _pending_state.store.pop(key, None)
+            return f"❎ Undangan untuk {name} dibatalkan."
+
+        if lower not in _INVITE_CONFIRM_VOCAB:
+            # Stay parked; nudge. Keeps the draft intact.
+            return (
+                f"Undangan untuk {name} masih menunggu konfirmasi.\n"
+                "Balas *kirim* untuk kirim, atau *batal* untuk membatalkan."
+            )
+
+        _pending_state.store.pop(key, None)
+        if not phone or not draft:
+            return "Data undangan hilang. Ulangi perintahnya ya."
+        return await self._handle_send(phone, draft)
 
     # ------------------------------------------------------------------ #
     # Psychological guidance                                              #

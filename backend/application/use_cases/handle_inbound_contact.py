@@ -38,7 +38,7 @@ GREETING_TOKENS: tuple[str, ...] = (
 )
 
 WELCOME_TEMPLATE = (
-    "Halo {name}! 👋 Selamat datang di WhatsApp Macca — Generasi Bebas Plastik.\n\n"
+    "Halo {name}! 👋 Selamat datang di WhatsApp Chris-Fasil-GBP — Generasi Bebas Plastik.\n\n"
     "Nomor kamu sudah terhubung dengan akun volunteer. Kamu bisa mulai "
     "kirim laporan, tanya misi, atau minta dukungan kapan saja di chat ini.\n\n"
     "Ketik *halo* atau */mulai* untuk lihat ringkasan status kamu."

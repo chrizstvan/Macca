@@ -38,6 +38,9 @@ class Settings:
     whatsapp_phone_number_id: str = ""
     whatsapp_access_token: str = ""
     whatsapp_verify_token: str = ""
+    # Message-template defaults (for cold / >24h sends — see send_template)
+    whatsapp_template_lang: str = "id"
+    whatsapp_welcome_template: str = "volunteer_welcome"
 
     # Fasilitator identity (works for both Telegram and WhatsApp)
     fasilitator_phone: str = ""
@@ -111,6 +114,10 @@ class Settings:
         self.whatsapp_phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
         self.whatsapp_access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
         self.whatsapp_verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+        self.whatsapp_template_lang = os.getenv("WHATSAPP_TEMPLATE_LANG", "id")
+        self.whatsapp_welcome_template = os.getenv(
+            "WHATSAPP_WELCOME_TEMPLATE", "volunteer_welcome"
+        )
 
         # Fasilitator phone (WhatsApp identity)
         self.fasilitator_phone = os.getenv("FASILITATOR_PHONE", "")

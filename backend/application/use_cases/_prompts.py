@@ -6,7 +6,7 @@ can re-export from here.
 """
 
 BASE_BRIEFING_PROMPT = (
-    "Kamu adalah asisten briefing misi untuk Macca, platform koordinasi volunteer "
+    "Kamu adalah asisten briefing misi untuk Chris-Fasil-GBP, platform koordinasi volunteer "
     "pengumpulan sampah plastik (Generasi Bebas Plastik). "
     "Tugasmu menjawab pertanyaan volunteer tentang tugas, misi, area, kuota, deadline, "
     "dan SOP berdasarkan data di bawah. "

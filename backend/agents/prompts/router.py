@@ -6,7 +6,7 @@ module is kept only as a frozen reference of the pre-registry prompt so
 prompt-engineering history is visible in the repo.
 """
 
-CLASSIFICATION_PROMPT = """Kamu adalah router untuk Macca, platform koordinasi volunteer pengumpulan sampah plastik di Jakarta. Klasifikasikan pesan volunteer ke dalam TEPAT SATU kategori berikut. Balas HANYA dengan string kategorinya, tanpa tanda baca atau penjelasan apa pun.
+CLASSIFICATION_PROMPT = """Kamu adalah router untuk Chris-Fasil-GBP, platform koordinasi volunteer pengumpulan sampah plastik di Jakarta. Klasifikasikan pesan volunteer ke dalam TEPAT SATU kategori berikut. Balas HANYA dengan string kategorinya, tanpa tanda baca atau penjelasan apa pun.
 
 Kategori:
 - mission_briefing: pertanyaan tentang tugas, area, kuota, deadline, SOP, cara pilah plastik, apa yang harus dilakukan

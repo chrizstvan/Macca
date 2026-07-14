@@ -17,15 +17,27 @@ from ._constants import (
     SEND_PATTERN,
     STRATEGY_KEYWORDS,
 )
-from ._consult import ConsultMixin
+from ._consult import INVITE_CONFIRM_STEP, ConsultMixin
+from ._education import EducationDraftMixin
+from ._ondemand import OnDemandDraftMixin
 from ._queries import QueryMixin
+from ._quiz import QuizApprovalMixin
 from ._relay import RelayMixin
+from ._reminders import REMINDER_DRAFT_STEP, ReminderMixin
 
 logger = logging.getLogger(__name__)
 
 
 class FasilitatorHubAgent(
-    CommandMixin, ConsultMixin, RelayMixin, QueryMixin, BaseAgent
+    CommandMixin,
+    ConsultMixin,
+    RelayMixin,
+    ReminderMixin,
+    QuizApprovalMixin,
+    EducationDraftMixin,
+    OnDemandDraftMixin,
+    QueryMixin,
+    BaseAgent,
 ):
     """Operational summaries, flagged-report digests, broadcast drafting, and strategic consultation for fasilitators."""
 
@@ -75,6 +87,20 @@ class FasilitatorHubAgent(
                 await self.save_chat_history(telegram_id, "user", message, self.name)
                 await self.save_chat_history(telegram_id, "assistant", reply, self.name)
                 return reply
+            if entry.get("step") == REMINDER_DRAFT_STEP:
+                reply = await self._resume_reminder_draft(
+                    message=message, context=context, entry=entry
+                )
+                await self.save_chat_history(telegram_id, "user", message, self.name)
+                await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+                return reply
+            if entry.get("step") == INVITE_CONFIRM_STEP:
+                reply = await self._resume_invite_send(
+                    message=message, context=context, entry=entry
+                )
+                await self.save_chat_history(telegram_id, "user", message, self.name)
+                await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+                return reply
 
         # Q&A relay — fasilitator forwards a volunteer question and (optionally)
         # asks the bot to DM the volunteer directly.
@@ -116,6 +142,50 @@ class FasilitatorHubAgent(
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", captured, self.name)
             return captured
+
+        # Quiz approval — fasilitator replying to an auto-generated quiz draft
+        # ("kirim quiz" / "edit quiz …" / "batal quiz"). Intercept early.
+        if self._is_quiz_command(message):
+            reply = await self._handle_quiz_command(message, context)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+
+        # Education draft revision ("edit edukasi [instruksi]").
+        if self._is_education_edit(message):
+            reply = await self._handle_education_edit(message, context)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+
+        # On-demand DRAFT requests ("buatkan checklist/laporan impact/edukasi …").
+        # Intercept before intent classification (would otherwise hit
+        # generate_report / generate_content). Draft-only, never broadcast.
+        if self._ondemand_draft_kind(message):
+            reply = await self._handle_ondemand_draft(message, context)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+
+        # Action-item reminder flow — intercept BEFORE intent classification so
+        # "buatkan reminder presensi" isn't swallowed by the generic
+        # ``send_reminder`` progress-nudge intent.
+        if self._is_reminder_request(message):
+            reply = await self._handle_reminder_request(message, context)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+
+        # Natural-language invite → draft + confirm + WhatsApp send.
+        # Intercept before intent classification (would otherwise be swallowed
+        # by generate_content / send_reminder). Returns None when no known
+        # volunteer is named → fall through to the normal pipeline.
+        if self._is_invite_request(message):
+            invite_reply = await self._handle_invite_request(message, context)
+            if invite_reply is not None:
+                await self.save_chat_history(telegram_id, "user", message, self.name)
+                await self.save_chat_history(telegram_id, "assistant", invite_reply, self.name)
+                return invite_reply
 
         # Phase 6 intent classification — dispatch dedicated handlers BEFORE the
         # legacy strategy/psych/draft fallback.

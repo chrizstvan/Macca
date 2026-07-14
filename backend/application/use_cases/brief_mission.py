@@ -82,6 +82,7 @@ class BriefMission:
         volunteer_id: UUID,
         message: str,
         telegram_id: int | None = None,
+        challenge_context: str = "",
     ) -> BriefOutcome:
         volunteer = await self.volunteers.get_by_id(volunteer_id)
         if volunteer is None:
@@ -120,6 +121,7 @@ class BriefMission:
             except Exception:
                 team_progress = None
 
+        challenge_suffix = f"\n\n{challenge_context}" if challenge_context else ""
         system_prompt = self._build_system_prompt(
             volunteer=volunteer,
             mission=mission,
@@ -127,7 +129,7 @@ class BriefMission:
             progress_kg=progress_kg,
             today=today,
             team_progress=team_progress,
-        )
+        ) + challenge_suffix
 
         history = await self.history.get_recent(
             telegram_id, limit=HISTORY_LIMIT

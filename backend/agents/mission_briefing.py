@@ -76,11 +76,14 @@ class MissionBriefingAgent(BaseAgent):
         )
         from backend.infrastructure.composition_root import build_brief_mission
 
+        from .services.challenge_context import build_active_challenge_block
+
         use_case = build_brief_mission()
         outcome = await use_case.execute(
             volunteer_id=UUID(str(volunteer["id"])),
             message=message,
             telegram_id=telegram_id,
+            challenge_context=build_active_challenge_block(),
         )
 
         if isinstance(outcome, NotRegistered):
@@ -99,14 +102,18 @@ class MissionBriefingAgent(BaseAgent):
 
     async def _brief_fasilitator(self, message: str, context: dict) -> str:
         """Fasilitator-persona briefing: every active mission + every assignment."""
+        from .services.challenge_context import build_active_challenge_block
+
         missions = await self._fetch_active_missions_with_assignments()
         summary = self._format_fasilitator_briefing(missions)
+        challenge_block = build_active_challenge_block()
         system_prompt = (
             BASE_PROMPT
             + "\n\nPERSONA: Fasilitator. Berikan info lengkap tentang semua misi "
             "aktif dan volunteer yang ter-assign. Boleh sertakan rekomendasi "
             "tindakan operasional."
             + f"\n\n{summary}\n\n{SOP_SECTION}"
+            + (f"\n\n{challenge_block}" if challenge_block else "")
         )
         telegram_id = context.get("telegram_id")
         history = await self.get_chat_history(telegram_id, limit=10)

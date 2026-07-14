@@ -18,6 +18,7 @@ from backend.application.use_cases.send_mission_education_brief import (
     SendMissionEducationBrief,
 )
 from backend.application.use_cases.send_weekly_fact import SendWeeklyPlasticFact
+from backend.application.use_cases.broadcast_quiz_now import BroadcastQuizNow
 from backend.application.use_cases.send_weekly_quiz import SendWeeklyQuiz
 from backend.application.use_cases.submit_report import SubmitReport
 from backend.config import settings
@@ -37,6 +38,13 @@ from .persistence.supabase_fasilitator_context_repo import (
 )
 from .persistence.supabase_mission_repo import SupabaseMissionRepository
 from .persistence.supabase_report_repo import SupabaseReportRepository
+from .persistence.supabase_content_draft_repo import (
+    SupabaseContentDraftRepository,
+)
+from .persistence.supabase_quiz_draft_repo import SupabaseQuizDraftRepository
+from .persistence.supabase_scheduled_message_repo import (
+    SupabaseScheduledMessageRepository,
+)
 from .persistence.supabase_team_repo import SupabaseTeamRepository
 from .persistence.supabase_volunteer_query_repo import (
     SupabaseVolunteerQueryRepository,
@@ -115,6 +123,30 @@ def build_handle_quiz_answer() -> HandleQuizAnswer:
     return HandleQuizAnswer(quizzes=SupabaseActiveQuizRepository(db))
 
 
+def build_broadcast_quiz_now() -> BroadcastQuizNow:
+    """Broadcast an approved quiz spec now + create its active_quizzes row."""
+    return BroadcastQuizNow(
+        volunteers=SupabaseVolunteerRepository(db),
+        quizzes=SupabaseActiveQuizRepository(db),
+        notifier=_notifier(),
+    )
+
+
+def build_quiz_draft_repository() -> SupabaseQuizDraftRepository:
+    """Read/write draft-quiz store (``quizzes`` table, draft→approved→sent)."""
+    return SupabaseQuizDraftRepository(db)
+
+
+def build_content_draft_repository() -> SupabaseContentDraftRepository:
+    """Read/write draft-only content store (``content_drafts`` table)."""
+    return SupabaseContentDraftRepository(db)
+
+
+def build_scheduled_message_repository() -> SupabaseScheduledMessageRepository:
+    """Read/write the ``scheduled_messages`` dispatch queue."""
+    return SupabaseScheduledMessageRepository(db)
+
+
 def build_handle_inbound_contact() -> HandleInboundContact:
     return HandleInboundContact(
         volunteers=SupabaseVolunteerRepository(db),
@@ -163,6 +195,10 @@ __all__ = [
     "build_send_mission_education_brief",
     "build_send_weekly_quiz",
     "build_handle_quiz_answer",
+    "build_broadcast_quiz_now",
+    "build_quiz_draft_repository",
+    "build_content_draft_repository",
+    "build_scheduled_message_repository",
     "build_handle_inbound_contact",
     "build_team_repository",
     "build_chat_history_repository",

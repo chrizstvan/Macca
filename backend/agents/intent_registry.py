@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from .base_agent import BaseAgent
 
 ROUTER_HEADER = (
-    "Kamu adalah router untuk Macca, platform koordinasi volunteer pengumpulan "
+    "Kamu adalah router untuk Chris-Fasil-GBP, platform koordinasi volunteer pengumpulan "
     "sampah plastik di Jakarta. Klasifikasikan pesan volunteer ke dalam TEPAT "
     "SATU kategori berikut. Balas HANYA dengan string kategorinya, tanpa "
     "tanda baca atau penjelasan apa pun."

@@ -71,6 +71,74 @@ async def lifespan(app: FastAPI):
     async def _weekly_quiz_job() -> None:
         await build_send_weekly_quiz().execute()
 
+    async def _auto_generate_quiz_draft_job() -> None:
+        """Every 3 days 09:00 WIB — draft a quiz + DM fasilitator for review."""
+        from backend.agents.quiz_generator import QuizGenerator
+        from backend.agents.services.notifications import alert_fasilitator
+        from backend.infrastructure.composition_root import (
+            build_quiz_draft_repository,
+        )
+
+        try:
+            quiz = await QuizGenerator().generate(difficulty="Sedang", num_options=4)
+            await build_quiz_draft_repository().create_draft(**quiz)
+        except Exception as exc:
+            logger.warning("auto quiz draft failed: %s", exc)
+            return
+
+        await alert_fasilitator(
+            QuizGenerator.build_review_text(quiz)
+            + "\n\nMau kirim quiz ini ke volunteer?\n"
+            "• 'kirim quiz' → default delay\n"
+            "• 'kirim quiz 12 jam lagi' / 'kirim quiz sekarang'\n"
+            "• 'edit quiz [instruksi]' | 'batal quiz'"
+        )
+
+    async def _auto_generate_education_draft_job() -> None:
+        """Every 3 days 09:00 WIB (offset from quiz) — education DRAFT only.
+
+        Sent to the fasilitator to copy-paste into the group; never broadcast
+        to volunteers.
+        """
+        from backend.agents.education_generator import EducationContentGenerator
+        from backend.agents.services.notifications import alert_fasilitator
+        from backend.infrastructure.composition_root import (
+            build_content_draft_repository,
+            build_fasilitator_context_repository,
+        )
+
+        gen = EducationContentGenerator()
+        topic = gen.topic_for(gen.rotation_index())
+        try:
+            content = await gen.generate(topic)
+        except Exception as exc:
+            logger.warning("auto education generate failed: %s", exc)
+            return
+
+        # Optional recent-news enrichment — gated off by default. No news
+        # provider is wired yet, so an enabled flag just logs (honest no-op).
+        try:
+            flag = await build_fasilitator_context_repository().get(
+                "enable_news_search"
+            )
+        except Exception:
+            flag = None
+        if (flag or "false").lower() == "true":
+            logger.info(
+                "enable_news_search is on but no news provider is configured; "
+                "skipping enrichment"
+            )
+
+        try:
+            await build_content_draft_repository().create_draft(
+                type="education", topic=topic, content=content
+            )
+        except Exception as exc:
+            logger.warning("education draft persist failed: %s", exc)
+            return
+
+        await alert_fasilitator(gen.build_draft_message(topic, content))
+
     # Mon 07:30 WIB — plastic-education broadcast
     scheduler.add_cron_job(
         _weekly_plastic_fact_job,
@@ -82,6 +150,18 @@ async def lifespan(app: FastAPI):
         _weekly_quiz_job,
         "0 12 * * 3",
         job_id="weekly_plastic_quiz",
+    )
+    # Every 3 days 09:00 WIB — auto quiz draft → fasilitator approval flow
+    scheduler.add_cron_job(
+        _auto_generate_quiz_draft_job,
+        "0 9 */3 * *",
+        job_id="auto_quiz_draft",
+    )
+    # Day 3,6,9… 09:00 WIB — education DRAFT (offset 2 days from quiz, no overlap)
+    scheduler.add_cron_job(
+        _auto_generate_education_draft_job,
+        "0 9 3,6,9,12,15,18,21,24,27,30 * *",
+        job_id="auto_education_draft",
     )
     # Default cron jobs (daily_reminder 18:00, morning_briefing 07:00,
     # daily_content 20:00, weekly_report Mon 08:00) — see SchedulerManager.
@@ -306,6 +386,7 @@ async def admin_reminders_send(
 
     volunteer_ids: list[str] = list(payload.get("volunteer_ids") or [])
     only_non_reporters = bool(payload.get("only_non_reporters"))
+    custom_message = (payload.get("message") or "").strip()
 
     query = db.table("volunteers").select(
         "id, name, area, quota_kg, phone, telegram_id"
@@ -313,6 +394,20 @@ async def admin_reminders_send(
     if volunteer_ids:
         query = query.in_("id", volunteer_ids)
     rows = query.execute().data or []
+
+    # Custom reminder path — free-text / challenge nudge, decoupled from kg
+    # progress tracking. No reports lookup, no progress template.
+    if custom_message:
+        template = REMIND_TEMPLATES["custom"]
+        dispatched = 0
+        for v in rows:
+            text = template.format(name=v.get("name") or "Volunteer", arg=custom_message)
+            try:
+                await notify_volunteer(v, text)
+                dispatched += 1
+            except Exception as exc:
+                logger.warning("admin reminder to %s failed: %s", v.get("name"), exc)
+        return {"dispatched": dispatched, "selected": len(rows)}
 
     if only_non_reporters and rows:
         today = (
@@ -402,6 +497,61 @@ async def admin_broadcast(
         return {"dispatched": dispatched, "recipients": len(rows)}
     finally:
         settings.active_channel = original
+
+
+@app.post("/admin/volunteers/{volunteer_id}/welcome")
+async def admin_send_welcome(
+    volunteer_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Send the approved welcome template to a volunteer (cold-start capable).
+
+    Uses a WhatsApp message template so it reaches a volunteer who has never
+    messaged the bot — the free-form path can't. Requires the template to be
+    approved in Meta and (dev mode) the number to be whitelisted.
+    """
+    _require_admin(authorization)
+
+    from backend.channels.whatsapp_handler import WhatsAppHandler
+    from backend.utils.phone_utils import normalize_phone
+
+    rows = (
+        db.table("volunteers")
+        .select("id, name, phone")
+        .eq("id", volunteer_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="volunteer not found")
+    volunteer = rows[0]
+    phone = normalize_phone(volunteer.get("phone"))
+    if not phone:
+        raise HTTPException(status_code=400, detail="volunteer has no valid phone")
+    name = volunteer.get("name") or "relawan"
+
+    try:
+        sent = await WhatsAppHandler().send_template(
+            phone, settings.whatsapp_welcome_template, [name]
+        )
+    except Exception as exc:
+        logger.error("welcome template to %s failed: %s", phone, exc)
+        raise HTTPException(status_code=502, detail=f"send failed: {exc}") from exc
+    if not sent:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "template not sent — check template approval, number whitelist "
+                "(dev mode), or WA token"
+            ),
+        )
+    return {
+        "ok": True,
+        "to": phone,
+        "template": settings.whatsapp_welcome_template,
+    }
 
 
 @app.post("/admin/rankings/recalculate")

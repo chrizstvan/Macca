@@ -196,6 +196,12 @@ class VolunteerSupportAgent(BaseAgent):
         volunteer_block = await self._build_volunteer_block(volunteer)
         system_prompt = build_system_prompt(volunteer_block)
 
+        from .services.challenge_context import build_active_challenge_block
+
+        challenge_block = build_active_challenge_block()
+        if challenge_block:
+            system_prompt = f"{system_prompt}\n\n{challenge_block}"
+
         situation = await self._classify_situation(message)
         situation_directive = self._situation_directive(situation)
         if situation_directive:

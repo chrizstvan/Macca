@@ -284,6 +284,48 @@ class WhatsAppHandler(BaseChannelHandler):
         }
         return await self._post_messages(payload)
 
+    async def send_template(
+        self,
+        to: str,
+        template_name: str,
+        params: list[str] | None = None,
+        *,
+        lang: str | None = None,
+    ) -> bool:
+        """POST a pre-approved template message (cold / outside 24h window).
+
+        Unlike ``send_message`` (free-form, only deliverable inside the 24h
+        customer-service window), an approved template reaches a recipient who
+        has never messaged the bot — the only way to initiate contact. ``params``
+        fill the body variables ``{{1}}, {{2}}, …`` in order; pass ``None`` for a
+        template with no variables.
+        """
+        if not self._creds_ready():
+            return False
+        components: list[dict[str, Any]] = []
+        if params:
+            components.append(
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": str(p)} for p in params
+                    ],
+                }
+            )
+        template: dict[str, Any] = {
+            "name": template_name,
+            "language": {"code": lang or settings.whatsapp_template_lang},
+        }
+        if components:
+            template["components"] = components
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "template",
+            "template": template,
+        }
+        return await self._post_messages(payload)
+
     async def send_image(
         self, to: str, image_url: str, caption: str = ""
     ) -> bool:

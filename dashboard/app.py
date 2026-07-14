@@ -5,12 +5,17 @@ Run from the project root:
 
 Pages (left sidebar):
     1_Volunteers.py    — volunteer management
-    2_Missions.py      — mission management
-    3_Reports.py       — report review
     4_Messages.py      — send messages & reminders
-    5_Ranking.py       — leaderboard & scores
     6_Content.py       — content & quiz generator
     7_Persona.py       — agent persona configurator
+    8_Action_Items.py  — all reminder targets incl. challenges (fully editable:
+                         deadline+time, challenge start/window, reward, links)
+    9_Settings.py      — program settings
+
+Archived in ``dashboard/_archived_pages/``:
+    2_Missions.py, 3_Reports.py, 5_Ranking.py — kg-based; program is
+    challenge-only now. 2_Challenges.py — merged into 8_Action_Items.py.
+    Move back into ``pages/`` to re-enable.
 
 Configuration:
     Copy ``.streamlit/secrets.toml.example`` to ``.streamlit/secrets.toml``

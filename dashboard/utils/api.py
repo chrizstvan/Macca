@@ -62,19 +62,25 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def send_reminder(
-    volunteer_ids: list[str] | None = None, *, only_non_reporters: bool = False
+    volunteer_ids: list[str] | None = None,
+    *,
+    only_non_reporters: bool = False,
+    message: str | None = None,
 ) -> dict[str, Any]:
-    """Send a progress reminder.
+    """Send a reminder to volunteers.
 
-    * ``volunteer_ids`` empty / None → all active volunteers (filtered by
+    * ``message`` set → send that free-text reminder (challenge nudge / custom),
+      decoupled from kg progress. ``only_non_reporters`` is ignored.
+    * ``message`` omitted → legacy kg progress reminder (filtered by
       ``only_non_reporters`` when set).
-    * ``volunteer_ids`` provided → exact set.
+    * ``volunteer_ids`` empty / None → all active volunteers; provided → exact set.
     """
     return _post(
         "/admin/reminders/send",
         {
             "volunteer_ids": list(volunteer_ids or []),
             "only_non_reporters": bool(only_non_reporters),
+            "message": (message or "").strip(),
         },
     )
 
@@ -100,6 +106,15 @@ def send_mission_brief(mission_id: str) -> dict[str, Any]:
         f"/admin/missions/{mission_id}/brief",
         {},
     )
+
+
+def send_welcome_template(volunteer_id: str) -> dict[str, Any]:
+    """Send the approved WhatsApp welcome template to a newly-added volunteer.
+
+    Works cold (volunteer need not have messaged the bot). Requires the
+    template approved in Meta + (dev mode) the number whitelisted.
+    """
+    return _post(f"/admin/volunteers/{volunteer_id}/welcome", {})
 
 
 def recalculate_rankings() -> dict[str, Any]:

@@ -15,7 +15,7 @@ Tips pilah plastik:
 - Lihat kode segitiga di bawah kemasan untuk memastikan"""
 
 BASE_PROMPT = (
-    "Kamu adalah asisten briefing misi untuk Macca, platform koordinasi volunteer "
+    "Kamu adalah asisten briefing misi untuk Chris-Fasil-GBP, platform koordinasi volunteer "
     "pengumpulan sampah plastik (Generasi Bebas Plastik). "
     "Tugasmu menjawab pertanyaan volunteer tentang tugas, misi, area, kuota, deadline, "
     "dan SOP berdasarkan data di bawah. "

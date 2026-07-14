@@ -16,6 +16,10 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from backend.agents.services.reporting_flag import (
+    is_reporting_enabled,
+    reporting_off_message,
+)
 from backend.utils.date_utils import format_hhmm as _shared_format_hhmm
 from backend.utils.impact_calculator import ImpactCalculator
 from backend.utils.query_utils import get_active_mission as _shared_get_active_mission
@@ -123,7 +127,15 @@ class ProgressTrackerAgent(BaseAgent):
             return await self.process_form_submission(context["form_data"], context)
 
         telegram_id = context.get("telegram_id")
-        if has_pending_report_for_context(context):
+        is_report_path = has_pending_report_for_context(context) or not (
+            any(kw in message.lower() for kw in RANK_KEYWORDS)
+            or self.is_progress_inquiry(message)
+        )
+        if is_report_path and not await is_reporting_enabled():
+            # Feature flag off — block volunteer reporting (new + in-flight).
+            # Inquiries above and Google Form (handled earlier) stay available.
+            reply = await reporting_off_message()
+        elif has_pending_report_for_context(context):
             reply = await self._resume_pending(message, context)
         elif any(kw in message.lower() for kw in RANK_KEYWORDS):
             reply = await self.process_rank_inquiry(context)
