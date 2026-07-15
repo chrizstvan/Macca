@@ -84,61 +84,31 @@ class QueryMixin:
     async def _format_volunteer_query_single(
         self, volunteer: dict, *, full_view: bool
     ) -> str:
-        total = await self._sum_reports_for(volunteer["id"])
-        quota = float(volunteer.get("quota_kg") or 0)
-        pct = (total / quota * 100) if quota else 0
-
         if not full_view:
             return (
                 f"📋 Info volunteer: {volunteer.get('name')}\n"
-                f"📍 Area: {volunteer.get('area') or '-'}\n"
-                f"📦 Progress: {pct:.0f}% (dari kuota)"
+                f"📍 Area: {volunteer.get('area') or '-'}"
             )
 
-        mission = await self._active_mission_for(volunteer["id"])
-        deadline = mission.deadline if (mission and mission.deadline) else "-"
-        days_left = self._days_left_to(deadline)
-        last_report = await self._last_report_for(volunteer["id"])
-        last_line = (
-            f"{last_report.reported_at.date().isoformat() if last_report.reported_at else '-'} — "
-            f"{last_report.kg_collected.value:g} kg di "
-            f"{last_report.location or '-'}"
-            if last_report
-            else "(belum ada laporan)"
-        )
         team = volunteer.get("team") or []
-        team_str = ", ".join(team) if team else "-"
-        status_emoji, status_text = self._status_for_pct(pct)
-
+        team_str = ", ".join(team) if isinstance(team, list) and team else (
+            team if isinstance(team, str) and team else "-"
+        )
         return (
             f"📋 Info volunteer: {volunteer.get('name')}\n"
             f"📍 Area: {volunteer.get('area') or '-'}\n"
-            f"🎯 Kuota: {quota:g} kg\n"
-            f"📦 Progress: {total:g}/{quota:g} kg ({pct:.0f}%)\n"
-            f"⏰ Deadline: {deadline} ({days_left} hari lagi)\n"
-            f"👥 Tim: {team_str}\n"
-            f"📝 Laporan terakhir: {last_line}\n"
-            f"Status: {status_emoji} {status_text}"
+            f"👥 Tim: {team_str}"
         )
 
     async def _format_volunteer_query_multi(
         self, volunteers: list[dict], *, full_view: bool
     ) -> str:
         names = " vs ".join(v.get("name") or "?" for v in volunteers)
-        lines = [f"📊 Progress {names}:"]
+        lines = [f"📊 Info {names}:"]
         for v in volunteers:
-            total = await self._sum_reports_for(v["id"])
-            quota = float(v.get("quota_kg") or 0)
-            pct = (total / quota * 100) if quota else 0
-            if full_view:
-                lines.append(
-                    f"• {v.get('name')}: {total:g}/{quota:g} kg "
-                    f"({pct:.0f}%) — {v.get('area') or '-'}"
-                )
-            else:
-                lines.append(
-                    f"• {v.get('name')}: {pct:.0f}% — {v.get('area') or '-'}"
-                )
+            lines.append(
+                f"• {v.get('name')} — {v.get('area') or '-'}"
+            )
         return "\n".join(lines)
 
     async def _active_mission_for(self, volunteer_id):
@@ -195,32 +165,17 @@ class QueryMixin:
     async def _format_volunteer_detail(
         self, volunteer: dict, *, brief: bool = False
     ) -> str:
-        from backend.infrastructure.composition_root import (
-            build_report_repository,
-        )
-
-        total = await self._sum_reports_for(volunteer["id"])
-        quota = float(volunteer.get("quota_kg") or 0)
-        pct = (total / quota * 100) if quota else 0
-        rows = await build_report_repository().list_for_volunteer(
-            UUID(str(volunteer["id"])), limit=3
-        )
-        last_lines = (
-            "\n".join(
-                f"  • {r.reported_at.date().isoformat() if r.reported_at else '-'}: "
-                f"{r.kg_collected.value:g} kg @ {r.location or '-'}"
-                for r in rows
-            )
-            or "  (belum ada laporan)"
+        team = volunteer.get("team") or []
+        team_str = ", ".join(team) if isinstance(team, list) and team else (
+            team if isinstance(team, str) and team else "-"
         )
         head = (
             f"👤 {volunteer.get('name')}\n"
-            f"📍 Area: {volunteer.get('area') or '-'}\n"
-            f"📦 Progress: {total:g}/{quota:g} kg ({pct:.0f}%)"
+            f"📍 Area: {volunteer.get('area') or '-'}"
         )
         if brief:
             return head
-        return f"{head}\n📅 Laporan terakhir:\n{last_lines}"
+        return f"{head}\n👥 Tim: {team_str}"
 
     async def _sum_reports_for(self, volunteer_id) -> float:
         from backend.infrastructure.composition_root import (

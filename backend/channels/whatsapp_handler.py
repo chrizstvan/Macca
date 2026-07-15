@@ -34,22 +34,20 @@ MAIN_MENU_TRIGGERS = frozenset({
     "pagi", "siang", "sore", "malam", "malem", "kembali", "back",
     "/menu", "/mulai", "/start", "/home",
 })
-MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
-MAIN_MENU_PROMPT_DEFAULT = "Halo! 👋\nSenang ketemu lagi 🌱\nMau ngapain hari ini?"
-MAIN_MENU_BUTTONS = ("📝 Lapor plastik", "📊 Lihat progress", "❓ Bantuan")
+MAIN_MENU_PROMPT_WITH_NAME = "Halo {name}! 👋 Senang ketemu 🌱"
+MAIN_MENU_PROMPT_DEFAULT = "Halo! 👋 Senang ketemu 🌱"
 
-# "Bantuan"/help — the ❓ menu button title plus typed variants. Matched on
-# the lowercased + stripped message, so the button emoji form is included.
+# "Bantuan"/help keyword variants. Matched on the lowercased + stripped message.
 HELP_TRIGGERS = frozenset({
     "bantuan", "❓ bantuan", "bantu", "help", "/help", "tolong",
 })
 HELP_MESSAGE = (
-    "Aku bisa bantu kamu 🌱\n"
-    "📝 *Lapor plastik* — catat hasil pengumpulanmu "
-    "(cth: \"lapor 5 kg di Menteng\")\n"
-    "📊 *Lihat progress* — cek total kg & peringkatmu\n"
-    "💬 *Tanya apa saja* seputar plastik, daur ulang, lingkungan, atau misimu\n\n"
-    "Pilih menu di bawah atau langsung ketik pertanyaanmu ya!"
+    "Aku Bot Asisten Chris-Fasil-GBP 🌱\n"
+    "Kamu bisa tanya aku soal:\n"
+    "🎯 *Challenge* yang lagi jalan: tahapan, cara ikut, deadline\n"
+    "✍️ *Bikin caption* buat postingan (kirim teks atau foto aksimu)\n"
+    "💬 Info plastik, daur ulang, lingkungan, atau motivasi\n\n"
+    "Langsung ketik aja pertanyaanmu ya!"
 )
 
 
@@ -120,16 +118,14 @@ class WhatsAppHandler(BaseChannelHandler):
             if not proceed_to_router:
                 return
 
-        # "Bantuan"/help button or keyword — reply with a capabilities message
-        # and re-surface the action buttons, instead of falling through to the
-        # off-topic gate. Same fasilitator/test-mode gating as the menu below.
+        # "Bantuan"/help keyword — reply with a capabilities message (no buttons),
+        # instead of falling through to the off-topic gate. Same
+        # fasilitator/test-mode gating as the menu below.
         if sender_phone and text.strip().lower() in HELP_TRIGGERS:
             from backend.agents.router_agent import test_mode_state
 
             if not self.is_fasilitator(sender_phone) or sender_phone in test_mode_state:
-                await self.send_buttons(
-                    sender_phone, HELP_MESSAGE, list(MAIN_MENU_BUTTONS)
-                )
+                await self.send_message(sender_phone, HELP_MESSAGE)
                 return
 
         # Quick-menu trigger — short-circuit before router/LLM dispatch when
@@ -378,9 +374,11 @@ class WhatsAppHandler(BaseChannelHandler):
     async def send_main_menu(
         self, to: str, *, volunteer_name: str | None = None
     ) -> bool:
-        """Send the quick-action reply-button menu (Lapor / Progress / Bantuan).
+        """Send a personalised greeting + capabilities (no buttons).
 
-        Personalises the greeting with the volunteer's first name when known.
+        Reporting + progress menus are retired (challenge-based program); the
+        greeting now just points the volunteer to ask anything, which the
+        router handles (help / challenge guidance / caption).
         """
         first_name = (volunteer_name or "").strip().split(" ")[0]
         prompt = (
@@ -388,11 +386,7 @@ class WhatsAppHandler(BaseChannelHandler):
             if first_name
             else MAIN_MENU_PROMPT_DEFAULT
         )
-        return await self.send_buttons(
-            to,
-            prompt,
-            list(MAIN_MENU_BUTTONS),
-        )
+        return await self.send_message(to, f"{prompt}\n\n{HELP_MESSAGE}")
 
     async def send_list(
         self,

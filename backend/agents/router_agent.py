@@ -23,7 +23,7 @@ from .base_agent import BaseAgent
 # Order doesn't matter as long as every specialist module is imported before
 # the router builds its dispatch table.
 from . import (  # noqa: F401  (imports for registry side-effect)
-    content_creator,
+    caption_generator,
     impact_analyzer,
     mission_briefing,
     progress_tracker,

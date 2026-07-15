@@ -169,11 +169,6 @@ class BriefMission:
             volunteer.team if volunteer.is_team_mode else "—"
         )
         mode_label = "Tim" if volunteer.is_team_mode else "Individu"
-        quota = (
-            assignment.quota_kg.value
-            if assignment is not None
-            else volunteer.quota_kg.value
-        )
         area = (
             assignment.assigned_area
             if assignment is not None
@@ -185,15 +180,8 @@ class BriefMission:
             f"- Nama: {volunteer.name}\n"
             f"- Area tugas: {area}\n"
             f"- Mode misi: {mode_label}\n"
-            f"- Tim: {team_label}\n"
-            f"- Kuota: {quota:g} kg"
+            f"- Tim: {team_label}"
         )
-        if team_progress is not None and getattr(team_progress, "member_count", 0):
-            volunteer_section += (
-                "\n- Rollup tim: "
-                f"{team_progress.reported_kg:g}/{team_progress.total_quota_kg:g} kg "
-                f"({team_progress.pct:.0f}%) — {team_progress.member_count} anggota"
-            )
 
         if mission is not None:
             remaining = mission.days_until_deadline(today)
@@ -208,9 +196,7 @@ class BriefMission:
                 "Misi aktif:\n"
                 f"- Judul: {mission.title}\n"
                 f"- Deskripsi: {mission.description or '-'}\n"
-                f"- Deadline: {mission.deadline} ({remaining_text})\n"
-                f"- Progress {volunteer.name}: {progress_kg:g} kg "
-                f"dari kuota {quota:g} kg"
+                f"- Deadline: {mission.deadline} ({remaining_text})"
             )
         else:
             mission_section = NO_ACTIVE_MISSION_HINT

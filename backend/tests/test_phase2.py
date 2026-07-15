@@ -23,7 +23,7 @@ TEST_CASES = [
     ("saya mau keluar dari program", "volunteer_support"),
     ("gimana cara laporan?", "mission_briefing"),
     ("sudah berapa total yang terkumpul?", "impact_analyzer"),
-    ("buatkan caption buat instagram", "content_creator"),
+    ("buatkan caption buat instagram", "make_caption"),
     ("capek nih", "volunteer_support"),
     ("target saya berapa kg?", "mission_briefing"),
     ("20 kilo plastik dari menteng", "progress_tracker"),

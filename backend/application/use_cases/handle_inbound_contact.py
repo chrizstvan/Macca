@@ -159,8 +159,8 @@ class HandleInboundContact:
         if active is None:
             return (
                 f"Halo lagi, {name}! 👋\n"
-                "Belum ada misi aktif untuk kamu saat ini. "
-                "Fasilitator akan menginformasikan misi berikutnya ya 🙏\n"
+                "Kamu bisa ikut challenge yang sedang aktif ya 🌱 "
+                "Tanya aku aja soal tahapan atau cara ikutnya!\n"
                 "Ada yang bisa saya bantu?"
             )
 

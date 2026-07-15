@@ -5,7 +5,7 @@ from .router_agent import RouterAgent
 from .mission_briefing import MissionBriefingAgent
 from .progress_tracker import ProgressTrackerAgent
 from .volunteer_support import VolunteerSupportAgent
-from .content_creator import ContentCreatorAgent
+from .caption_generator import CaptionGeneratorAgent
 from .impact_analyzer import ImpactAnalyzerAgent
 from .fasilitator_hub import FasilitatorHubAgent
 
@@ -15,7 +15,7 @@ __all__ = [
     "MissionBriefingAgent",
     "ProgressTrackerAgent",
     "VolunteerSupportAgent",
-    "ContentCreatorAgent",
+    "CaptionGeneratorAgent",
     "ImpactAnalyzerAgent",
     "FasilitatorHubAgent",
 ]

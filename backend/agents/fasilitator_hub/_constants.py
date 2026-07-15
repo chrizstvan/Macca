@@ -76,10 +76,8 @@ FAS_INTENTS: tuple[str, ...] = (
     "send_reminder",
     "get_status",
     "get_analytics",
-    "create_mission",
     "assign_volunteer",
     "broadcast",
-    "flag_review",
     "generate_report",
     "generate_content",
     "get_volunteer_detail",
@@ -93,13 +91,10 @@ INTENT_CLASSIFY_PROMPT = (
     "Balas HANYA dengan nama kategorinya (snake_case), tanpa penjelasan.\n\n"
     "Kategori:\n"
     "- send_reminder: kirim reminder, ingatkan, remind volunteer\n"
-    "- get_status: status program, siapa belum lapor, laporan hari ini, "
-    "summary harian\n"
-    "- get_analytics: analitik, statistik, grafik, tren, dampak total\n"
-    "- create_mission: buat misi baru, tugas baru, tambah mission\n"
-    "- assign_volunteer: assign volunteer, tugaskan, pindahkan ke area\n"
+    "- get_status: status program, challenge aktif, ringkasan volunteer\n"
+    "- get_analytics: analitik, statistik, tren, dampak program\n"
+    "- assign_volunteer: assign volunteer, tugaskan, pindahkan ke area/tim\n"
     "- broadcast: broadcast ke semua, umumkan ke semua volunteer\n"
-    "- flag_review: cek laporan mencurigakan, review flag, approve/reject\n"
     "- generate_report: buat laporan sponsor/pemerintah/publik\n"
     "- generate_content: buat caption/konten/postingan sosmed\n"
     "- get_volunteer_detail: detail / profil / info volunteer tertentu\n"
@@ -110,13 +105,11 @@ INTENT_CLASSIFY_PROMPT = (
     "'Rizki lapor 7kg dari Tebet hari ini')\n"
     "- default: pertanyaan strategis, konsultasi, atau tidak ada di atas\n\n"
     "Contoh:\n"
-    "'kirim reminder ke semua yang belum lapor' → send_reminder\n"
-    "'siapa belum lapor hari ini?' → get_status\n"
+    "'kirim reminder ke semua volunteer' → send_reminder\n"
+    "'status program hari ini' → get_status\n"
     "'tampilkan tren mingguan' → get_analytics\n"
-    "'buat misi baru pengumpulan PET di Cikini' → create_mission\n"
     "'tugaskan Budi ke area Menteng' → assign_volunteer\n"
     "'umumkan ke semua: besok kumpul jam 8' → broadcast\n"
-    "'cek laporan yang flagged' → flag_review\n"
     "'buatkan laporan dampak untuk donor' → generate_report\n"
     "'buat caption instagram dampak hari ini' → generate_content\n"
     "'detail volunteer Hendra' → get_volunteer_detail\n"
@@ -133,34 +126,24 @@ SUGGESTIONS: dict[str, tuple[str, ...]] = {
         "Lihat status program",
     ),
     "get_status": (
-        "Kirim reminder ke yang belum lapor",
+        "Kirim reminder ke volunteer",
         "Lihat detail volunteer tertentu",
-        "Cek laporan flagged",
+        "Lihat challenge aktif",
     ),
     "get_analytics": (
         "Buat laporan untuk donor",
         "Generate konten dari data ini",
-        "Lihat ranking volunteer",
-    ),
-    "create_mission": (
-        "Assign volunteer ke misi ini",
-        "Broadcast pengumuman misi baru",
-        "Cek semua misi aktif",
+        "Lihat status program",
     ),
     "assign_volunteer": (
         "Lihat status assignment",
         "Broadcast informasi tugas",
-        "Cek progress volunteer terkait",
+        "Cek detail volunteer terkait",
     ),
     "broadcast": (
         "Cek delivery broadcast",
         "Buat reminder follow-up",
-        "Lihat siapa sudah balas",
-    ),
-    "flag_review": (
-        "Setujui semua",
-        "Tolak laporan ini",
-        "Lihat detail volunteer terkait",
+        "Lihat status program",
     ),
     "generate_report": (
         "Kirim ke stakeholder",
@@ -180,33 +163,30 @@ SUGGESTIONS: dict[str, tuple[str, ...]] = {
     "query_other_volunteer": (
         "Kirim reminder",
         "Cek detail lengkap",
-        "Lihat ranking",
+        "Lihat status program",
     ),
     "save_report_for": (
         "Catat laporan volunteer lain",
-        "Lihat status hari ini",
-        "Cek laporan flagged",
+        "Lihat status program",
+        "Lihat challenge aktif",
     ),
     "default": (
         "Cek status program",
-        "Lihat siapa belum lapor",
+        "Lihat challenge aktif",
         "Generate konten harian",
     ),
 }
 
 
 REMIND_PATTERN = re.compile(
-    r"^/remind(?:\s+(hadir|form|misi|progress))?\s*(.*)$",
+    r"^/remind(?:\s+(hadir|form|challenge))?\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
 )
 
 REMIND_TEMPLATES: dict[str, str] = {
     "hadir": "Hai {name}! 📅 Jangan lupa hadir di kegiatan ya: {arg}",
     "form": "Hai {name}! 📋 Mohon isi form: {arg}",
-    "misi": "Hai {name}! 🎯 Update misi: target {quota_kg:g} kg di {area}.",
-    "progress": (
-        "Hei {name}! 💪 Progress kamu {reported_kg:g}/{quota_kg:g} kg. "
-        "Ayo semangat lapor ya!"
-    ),
+    "challenge": "Hai {name}! 🎯 Jangan lupa lanjutkan challenge yang aktif ya! {arg}",
+    "progress": "Hei {name}! 💪 Semangat lanjutkan aksimu di challenge! {arg}",
     "custom": "Hai {name}! {arg}",
 }

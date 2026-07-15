@@ -431,24 +431,7 @@ async def admin_reminders_send(
     template = REMIND_TEMPLATES["progress"]
     dispatched = 0
     for v in rows:
-        reported_total = sum(
-            float(r.get("kg_collected") or 0)
-            for r in (
-                db.table("reports")
-                .select("kg_collected")
-                .eq("volunteer_id", v["id"])
-                .execute()
-                .data
-                or []
-            )
-        )
-        text = template.format(
-            name=v.get("name") or "Volunteer",
-            arg="",
-            area=v.get("area") or "-",
-            quota_kg=float(v.get("quota_kg") or 0),
-            reported_kg=reported_total,
-        )
+        text = template.format(name=v.get("name") or "Volunteer", arg="")
         try:
             await notify_volunteer(v, text)
             dispatched += 1

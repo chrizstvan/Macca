@@ -21,8 +21,6 @@ The four default jobs:
 * ``daily_reminder``     — 18:00 WIB — DM volunteers with active mission,
                            less than 2 days to deadline, no report today.
 * ``morning_briefing``   — 07:00 WIB — DM fasilitator the morning summary.
-* ``daily_content``      — 20:00 WIB — generate Instagram caption when
-                           there were reports today.
 * ``weekly_report``      — Mon 08:00 WIB — fasilitator weekly report.
 
 Older callers used ``MaccaScheduler``; an alias is kept so they don't
@@ -133,31 +131,6 @@ async def _morning_briefing_job() -> None:
     from backend.agents.fasilitator_hub import FasilitatorHubAgent
 
     await FasilitatorHubAgent().get_morning_briefing()
-
-
-async def _daily_content_job() -> None:
-    """Only run when at least one report landed today."""
-    from backend.agents.content_creator import ContentCreatorAgent
-    from backend.database.supabase_client import db
-
-    today_iso = (
-        datetime.now(timezone.utc)
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        .isoformat()
-    )
-    has_today = (
-        db.table("reports")
-        .select("id")
-        .gte("reported_at", today_iso)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if not has_today:
-        logger.info("daily_content: no reports today, skipping")
-        return
-    await ContentCreatorAgent().daily_content_summary()
 
 
 async def _weekly_report_job() -> None:
@@ -295,11 +268,6 @@ DEFAULT_JOBS: tuple[dict, ...] = (
         "id": "morning_briefing",
         "func": _morning_briefing_job,
         "cron": "0 7 * * *",  # 07:00 WIB
-    },
-    {
-        "id": "daily_content",
-        "func": _daily_content_job,
-        "cron": "0 20 * * *",  # 20:00 WIB
     },
     {
         "id": "weekly_report",

@@ -30,7 +30,7 @@ from telegram.ext import (
 )
 
 from backend.agents import (
-    ContentCreatorAgent,
+    CaptionGeneratorAgent,
     FasilitatorHubAgent,
     ImpactAnalyzerAgent,
     MissionBriefingAgent,
@@ -76,7 +76,7 @@ def init_agents() -> RouterAgent:
                 "mission_briefing": MissionBriefingAgent(),
                 "progress_tracker": ProgressTrackerAgent(),
                 "volunteer_support": VolunteerSupportAgent(),
-                "content_creator": ContentCreatorAgent(),
+                "make_caption": CaptionGeneratorAgent(),
                 "impact_analyzer": ImpactAnalyzerAgent(),
                 "fasilitator_hub": FasilitatorHubAgent(),
             }

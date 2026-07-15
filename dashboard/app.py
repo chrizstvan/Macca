@@ -31,22 +31,30 @@ from pathlib import Path
 # Make ``dashboard/utils`` importable when Streamlit runs this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import datetime as dt  # noqa: E402
+
 import pandas as pd  # noqa: E402
-import plotly.express as px  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from utils import theme  # noqa: E402  (import auto-installs Plotly theme)
+from utils import theme  # noqa: E402,F401  (import auto-installs Plotly theme)
 from utils.db import (  # noqa: E402
     clear_caches,
-    get_program_stats,
-    get_today_reports,
-    get_volunteers_with_status,
-    get_weekly_trend,
+    get_volunteers,
+    supabase,
 )
 
-PRIMARY_COLOR = theme.ACCENT_LEAF
 AUTO_REFRESH_INTERVAL_S = 60
-VOLUNTEERS_PER_ROW = 10
+
+TYPE_LABELS = {
+    "challenge": "🎯 Challenge",
+    "submission": "📤 Submit",
+    "kelas": "📚 Kelas",
+    "presensi": "✋ Presensi",
+    "pre_test": "📝 Pre-Test",
+    "post_test": "📝 Post-Test",
+    "tautan": "🔗 Tautan",
+    "buku_saku": "📖 Buku Saku",
+}
 
 st.set_page_config(
     page_title="Generasi Bebas Plastik",
@@ -58,113 +66,111 @@ st.title("🌱 Generasi Bebas Plastik — Dashboard")
 
 
 # --------------------------------------------------------------------------- #
-# ROW 1 — KPI metric cards                                                     #
+# Data                                                                         #
 # --------------------------------------------------------------------------- #
 
 
-def _metric_row() -> None:
-    stats = get_program_stats()
-    active_total = stats["active_volunteers"] or 0
+def _today() -> str:
+    return dt.date.today().isoformat()
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric(
-        "Total Terkumpul",
-        f"{stats['total_kg']:g} kg",
-        f"{stats['pct_target']}% dari target hari ini",
-    )
-    col2.metric("Sudah Lapor", f"{stats['reported']}/{active_total}")
-    col3.metric(
-        "Belum Lapor",
-        stats["pending"],
-        delta_color="inverse",
-    )
-    col4.metric(
-        "Perlu Dicek",
-        stats["flagged"],
-        delta_color="inverse",
-    )
+
+def _active_items() -> list[dict]:
+    try:
+        return (
+            supabase.table("action_items")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def _when(item: dict) -> str | None:
+    """Sort/display date: deadline or scheduled_at (date part)."""
+    raw = item.get("deadline") or item.get("scheduled_at")
+    return str(raw)[:10] if raw else None
+
+
+def _fmt(raw) -> str:
+    s = str(raw)
+    if ("T" in s or " " in s) and len(s) >= 16:
+        return f"{s[:10]} {s[11:16]}"
+    return s[:10]
+
+
+def _challenge_running(c: dict, today: str) -> bool:
+    start = str(c["start_date"])[:10] if c.get("start_date") else None
+    end = str(c["deadline"])[:10] if c.get("deadline") else None
+    return not (start and start > today) and not (end and end < today)
 
 
 # --------------------------------------------------------------------------- #
-# ROW 2 — weekly trend + recent reports feed                                   #
+# ROW 1 — headline counts                                                      #
 # --------------------------------------------------------------------------- #
 
 
-def _trend_and_feed() -> None:
-    left, right = st.columns([2, 1])
+def _metric_row(items: list[dict]) -> None:
+    today = _today()
+    vols = get_volunteers(active_only=True)
+    active_vol = 0 if vols.empty else len(vols)
+    challenges = [i for i in items if i.get("type") == "challenge"]
+    running = [c for c in challenges if _challenge_running(c, today)]
 
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Volunteer Aktif", active_vol)
+    c2.metric("Challenge Berjalan", len(running))
+    c3.metric("Action Item Aktif", len(items))
+
+
+# --------------------------------------------------------------------------- #
+# ROW 2 — activity feed (running now + upcoming)                               #
+# --------------------------------------------------------------------------- #
+
+
+def _activity_feed(items: list[dict]) -> None:
+    today = _today()
+
+    def _line(item: dict, extra: str = "") -> None:
+        label = TYPE_LABELS.get(item.get("type"), item.get("type"))
+        when = item.get("deadline") or item.get("scheduled_at")
+        when_str = f" · ⏰ {_fmt(when)}" if when else ""
+        st.markdown(f"**{label} — {item.get('title') or '?'}**{extra}{when_str}")
+        loc = item.get("location")
+        if loc:
+            st.caption(f"📍 {loc}")
+
+    running: list[dict] = []
+    upcoming: list[dict] = []
+    for it in items:
+        if it.get("type") == "challenge":
+            (running if _challenge_running(it, today) else upcoming).append(it)
+        else:
+            when = _when(it)
+            (upcoming if (when and when > today) else running).append(it)
+
+    running.sort(key=lambda x: _when(x) or "9999")
+    upcoming.sort(key=lambda x: _when(x) or "9999")
+
+    left, right = st.columns(2)
     with left:
-        weekly = get_weekly_trend()
-        fig = px.bar(
-            weekly,
-            x="day",
-            y="kg",
-            title="Tren Pengumpulan 7 Hari Terakhir",
-            labels={"day": "Tanggal (WIB)", "kg": "Kg"},
-            color_discrete_sequence=[PRIMARY_COLOR],
-        )
-        fig.update_layout(
-            margin=dict(l=10, r=10, t=40, b=10),
-            height=340,
-            xaxis_tickformat="%d %b",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
+        st.subheader("🟢 Sedang Berjalan")
+        if not running:
+            st.info("Tidak ada activity yang sedang berjalan.")
+        for it in running:
+            _line(it)
+            st.divider()
     with right:
-        st.subheader("Laporan Terbaru")
-        reports = get_today_reports()
-        if reports.empty:
-            st.info("Belum ada laporan hari ini.")
-            return
-        for _, r in reports.head(8).iterrows():
-            kg = float(r.get("kg") or 0)
-            st.write(
-                f"✅ **{r.get('volunteer_name', '?')}** — {kg:g} kg di "
-                f"{r.get('location') or '-'}"
-            )
-            st.caption(r.get("reported_at_relative") or "")
-
-
-# --------------------------------------------------------------------------- #
-# ROW 3 — volunteer status grid                                                #
-# --------------------------------------------------------------------------- #
-
-
-def _volunteer_grid() -> None:
-    st.subheader("Status Volunteer Hari Ini")
-    volunteers = get_volunteers_with_status()
-    if volunteers.empty:
-        st.info("Belum ada volunteer aktif.")
-        return
-
-    dot_tmpl = (
-        "<div style='display:flex;justify-content:center;align-items:center;"
-        "height:28px'>"
-        "<span style='width:14px;height:14px;border-radius:50%;background:{color};"
-        "box-shadow:0 0 6px {color}55'></span></div>"
-    )
-
-    rows = volunteers.to_dict(orient="records")
-    cols = st.columns(VOLUNTEERS_PER_ROW)
-    for i, v in enumerate(rows):
-        if i and i % VOLUNTEERS_PER_ROW == 0:
-            cols = st.columns(VOLUNTEERS_PER_ROW)
-        color = theme.STATUS_OK if v.get("reported") else theme.STATUS_BAD
-        with cols[i % VOLUNTEERS_PER_ROW]:
-            st.markdown(dot_tmpl.format(color=color), unsafe_allow_html=True)
-            st.caption((v.get("name") or "?")[:10])
-
-    # Legend — coloured dots inline so the key matches the grid above.
-    legend = (
-        f"<span style='color:{theme.TEXT_MUTED}'>"
-        f"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;"
-        f"background:{theme.STATUS_OK};margin-right:6px'></span>sudah lapor"
-        "&nbsp;&nbsp;·&nbsp;&nbsp;"
-        f"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;"
-        f"background:{theme.STATUS_BAD};margin-right:6px'></span>belum lapor"
-        "</span>"
-    )
-    st.markdown(legend, unsafe_allow_html=True)
+        st.subheader("🟡 Akan Datang")
+        if not upcoming:
+            st.info("Tidak ada activity terjadwal.")
+        for it in upcoming:
+            start = it.get("start_date")
+            extra = f" · mulai {str(start)[:10]}" if it.get("type") == "challenge" and start else ""
+            _line(it, extra)
+            st.divider()
 
 
 # --------------------------------------------------------------------------- #
@@ -194,11 +200,10 @@ def _controls() -> None:
 # --------------------------------------------------------------------------- #
 
 
-_metric_row()
+_items = _active_items()
+_metric_row(_items)
 st.divider()
-_trend_and_feed()
-st.divider()
-_volunteer_grid()
+_activity_feed(_items)
 st.divider()
 auto = _controls()
 

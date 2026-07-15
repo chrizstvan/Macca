@@ -90,7 +90,7 @@ if not view.empty:
     edit_cols = [
         c
         for c in (
-            "name", "phone", "area", "quota_kg", "is_active",
+            "name", "phone", "area", "is_active",
             "team", "whatsapp_connected", "last_contact_at",
         )
         if c in view.columns
@@ -111,7 +111,6 @@ if not view.empty:
             "name": st.column_config.TextColumn("Nama", disabled=True),
             "phone": st.column_config.TextColumn("Nomor HP", disabled=True),
             "area": st.column_config.TextColumn("Area"),
-            "quota_kg": st.column_config.NumberColumn("Kuota (kg)", min_value=1),
             "is_active": st.column_config.CheckboxColumn(
                 "Aktif",
                 help=(
@@ -149,7 +148,7 @@ if not view.empty:
         edits = 0
         errors: list[str] = []
         # Compare row-by-row against the unedited view; persist any column
-        # the user actually changed (team / area / quota_kg).
+        # the user actually changed (team / area / is_active).
         for orig_row, new_row in zip(
             editable_df.to_dict("records"), edited.to_dict("records")
         ):
@@ -161,8 +160,6 @@ if not view.empty:
                 patch["team"] = new_team if new_team else None
             if (new_row.get("area") or "") != (orig_row.get("area") or ""):
                 patch["area"] = (new_row.get("area") or "").strip() or None
-            if int(new_row.get("quota_kg") or 0) != int(orig_row.get("quota_kg") or 0):
-                patch["quota_kg"] = int(new_row.get("quota_kg") or 0)
             if bool(new_row.get("is_active")) != bool(orig_row.get("is_active")):
                 patch["is_active"] = bool(new_row.get("is_active"))
             if not patch:
@@ -343,14 +340,14 @@ with st.expander("➕ Tambah Volunteer Baru"):
 
 
 CSV_TEMPLATE = (
-    "name,phone,area,quota_kg,team,telegram_id\n"
-    "Rizki Pratama,08123456789,Menteng,25,Tim Cikini,\n"
+    "name,phone,area,team,telegram_id\n"
+    "Rizki Pratama,08123456789,Menteng,Tim Cikini,\n"
 )
 
 with st.expander("📥 Import dari CSV"):
     st.caption(
-        "Kolom wajib: ``name``, ``phone``, ``area``. "
-        "Opsional: ``quota_kg``, ``team``, ``telegram_id``. "
+        "Kolom wajib: ``name``, ``phone``. "
+        "Opsional: ``area`` (default Jakarta), ``team``, ``telegram_id``. "
         "Phone akan dinormalisasi ke format ``62…``."
     )
     st.download_button(
@@ -364,7 +361,7 @@ with st.expander("📥 Import dari CSV"):
         import_df = pd.read_csv(uploaded)
         st.dataframe(import_df, use_container_width=True, hide_index=True)
 
-        required = {"name", "phone", "area"}
+        required = {"name", "phone"}
         missing = required - set(import_df.columns)
         if missing:
             st.error(f"Kolom wajib hilang: {', '.join(sorted(missing))}")
@@ -374,14 +371,9 @@ with st.expander("📥 Import dari CSV"):
                 row = {
                     "name": str(raw.get("name") or "").strip(),
                     "phone": normalize_phone(raw.get("phone")),
-                    "area": str(raw.get("area") or "").strip(),
+                    "area": str(raw.get("area") or "").strip() or "Jakarta",
                     "is_active": True,
                 }
-                if raw.get("quota_kg") not in (None, ""):
-                    try:
-                        row["quota_kg"] = int(float(raw["quota_kg"]))
-                    except (TypeError, ValueError):
-                        pass
                 team_val = (raw.get("team") or "").strip() if isinstance(raw.get("team"), str) else ""
                 if team_val:
                     row["team"] = team_val

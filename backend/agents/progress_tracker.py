@@ -57,6 +57,14 @@ INQUIRY_KEYWORDS = (
 
 RANK_KEYWORDS = ("peringkat", "ranking", "rank", "leaderboard")
 
+# Program is challenge-based now — per-kg progress + points/ranking are not
+# tracked by the bot. Inquiry replies point volunteers to the challenge instead.
+_CHALLENGE_FOCUS_MSG = (
+    "Yuk fokus ke <b>challenge</b> yang sedang aktif 🌱 Mau tahu tahapan atau "
+    "cara ikutnya? Tanya aku aja! Kalau soal nilai/poin, itu diurus panitia "
+    "lewat Google Form ya 😊"
+)
+
 # Keyword sets for the duplicate-clarification multi-turn flow.
 NEW_REPORT_KEYWORDS = ("tambahan", "baru", "berbeda", "lain", "tambah")
 CORRECTION_KEYWORDS = ("sama", "koreksi", "salah", "ganti", "perbaiki", "betulkan")
@@ -138,9 +146,9 @@ class ProgressTrackerAgent(BaseAgent):
         elif has_pending_report_for_context(context):
             reply = await self._resume_pending(message, context)
         elif any(kw in message.lower() for kw in RANK_KEYWORDS):
-            reply = await self.process_rank_inquiry(context)
+            reply = _CHALLENGE_FOCUS_MSG
         elif self.is_progress_inquiry(message):
-            reply = await self.process_progress_inquiry(context)
+            reply = _CHALLENGE_FOCUS_MSG
         else:
             reply = await self.process_chat_report(message, context)
 
@@ -414,8 +422,8 @@ class ProgressTrackerAgent(BaseAgent):
         mission = context.get("mission") or self._get_active_mission(volunteer["id"])
         if mission is None:
             return (
-                "Belum ada misi aktif yang diassign ke kamu. "
-                "Fasilitator akan menginformasikan misi berikutnya ya 🙏"
+                "Yuk ikut challenge yang sedang aktif 🌱 "
+                "Tanya aku soal tahapan atau cara ikutnya ya!"
             )
 
         from uuid import UUID
@@ -485,8 +493,8 @@ class ProgressTrackerAgent(BaseAgent):
         mission = context.get("mission") or self._get_active_mission(volunteer["id"])
         if mission is None:
             return (
-                "Belum ada misi aktif, jadi laporanmu belum bisa dicatat. "
-                "Hubungi fasilitator ya 🙏"
+                "Yuk ikut challenge yang sedang aktif 🌱 "
+                "Tanya aku soal tahapan atau cara ikutnya ya!"
             )
 
         return await self._submit_via_use_case(
