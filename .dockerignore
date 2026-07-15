@@ -1,0 +1,11 @@
+.venv/
+.git/
+.github/
+dashboard/
+**/__pycache__/
+**/*.pyc
+.env
+.env.*
+*.log
+.DS_Store
+backend/tests/
