@@ -12,6 +12,7 @@ Adds two cross-cutting features on top of plain routing:
 """
 
 import logging
+import re
 
 from backend.config import settings
 from backend.utils.query_utils import find_volunteers_by_name
@@ -41,6 +42,32 @@ from .volunteer_support import is_allowed_topic
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTENT = "volunteer_support"
+
+# ── Conversation close ─────────────────────────────────────────────────
+# The bot ends most replies with "ada yang bisa dibantu?". Short decline /
+# thanks answers should get a warm sign-off instead of hitting the LLM /
+# off-topic gate. Matched on the punctuation-stripped, lowercased message,
+# and only when the volunteer/fasilitator is NOT mid multi-turn flow.
+CLOSE_DECLINE_TRIGGERS = frozenset({
+    "ga", "gak", "engga", "enggak", "ngga", "nggak", "tidak", "tdk", "no", "nope",
+    "ga ada", "gak ada", "tidak ada", "gada", "gaada", "belum", "belum ada",
+    "cukup", "udah cukup", "sudah cukup", "cukup itu", "udah", "sudah", "udahan",
+    "gpp", "ga usah", "gausah", "ga usah makasih", "engga makasih", "ga makasih",
+    "selesai", "beres", "aman", "oke aman", "udah sih", "gitu aja", "itu aja",
+})
+CLOSE_THANKS_TRIGGERS = frozenset({
+    "makasih", "makasih ya", "makasih kak", "makasih banyak", "terima kasih",
+    "terimakasih", "terima kasih ya", "thanks", "thank you", "thankyou", "thx",
+    "tengkyu", "trims", "makasi", "suwun", "nuhun", "ok makasih", "oke makasih",
+    "sip makasih", "mantap makasih",
+})
+CLOSE_DECLINE_MSG = (
+    "Siap! 🌱 Kalau nanti butuh bantuan, langsung chat aku aja "
+    "ya. Semangat! 💪"
+)
+CLOSE_THANKS_MSG = (
+    "Sama-sama! 😊 Senang bisa bantu 🌱"
+)
 
 
 def __getattr__(name: str):
@@ -271,6 +298,13 @@ class RouterAgent(BaseAgent):
             self.last_agent = "quiz_answer"
             return quiz_reply
 
+        # 0b. Warm conversation close — "ga" / "makasih" / "cukup" style replies
+        # when not mid multi-turn flow. Skips LLM + off-topic gate.
+        close_reply = self._maybe_close_conversation(message, context)
+        if close_reply is not None:
+            self.last_agent = "conversation_close"
+            return close_reply
+
         # 1. Fasilitator-only commands FIRST
         if context["is_fasilitator"] and message.strip().lower().startswith("/test"):
             response = await self.handle_test_commands(message, sender_key)
@@ -313,6 +347,30 @@ class RouterAgent(BaseAgent):
     # ------------------------------------------------------------------ #
     # Quiz answer interception                                            #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _maybe_close_conversation(message: str, context: dict) -> str | None:
+        """Warm sign-off for short decline / thanks replies.
+
+        Returns the closing text, or ``None`` to let normal routing continue.
+        Skips when a multi-turn flow is parked (invite/relay/reminder/quiz),
+        so a "batal"/"ga" that belongs to that flow isn't swallowed.
+        """
+        from backend.agents.services import pending_state
+
+        if pending_state.has_pending_for_context(context):
+            return None
+
+        normalized = " ".join(
+            re.sub(r"[^a-z\s]", "", (message or "").lower()).split()
+        )
+        if not normalized or len(normalized) > 20:
+            return None
+        if normalized in CLOSE_THANKS_TRIGGERS:
+            return CLOSE_THANKS_MSG
+        if normalized in CLOSE_DECLINE_TRIGGERS:
+            return CLOSE_DECLINE_MSG
+        return None
 
     _QUIZ_LETTERS = {"A", "B", "C", "D"}
 
