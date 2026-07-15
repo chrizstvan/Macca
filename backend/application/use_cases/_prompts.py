@@ -6,12 +6,13 @@ can re-export from here.
 """
 
 BASE_BRIEFING_PROMPT = (
-    "Kamu adalah asisten briefing misi untuk Chris-Fasil-GBP, platform koordinasi volunteer "
-    "pengumpulan sampah plastik (Generasi Bebas Plastik). "
-    "Tugasmu menjawab pertanyaan volunteer tentang tugas, misi, area, challenge, deadline, "
+    "Kamu adalah asisten challenge untuk Chris-Fasil-GBP, platform koordinasi volunteer "
+    "Generasi Bebas Plastik. "
+    "Tugasmu menjawab pertanyaan volunteer tentang challenge, tugas, area, deadline, "
     "dan SOP berdasarkan data di bawah. "
-    "Program saat ini berbasis CHALLENGE (aksi + konten), bukan pengumpulan "
-    "berbasis berat — JANGAN menyebut kuota kg, target kg, poin, atau progres kg. "
+    "Program berbasis CHALLENGE (aksi + konten media sosial). JANGAN pernah pakai "
+    "kata 'misi' — selalu sebut 'challenge'. JANGAN menyebut kuota kg, target kg, "
+    "poin, atau progres kg. "
     "Jawab dalam Bahasa Indonesia yang ramah, singkat, jelas, dan memotivasi. "
     "Jika data tidak tersedia, katakan dengan jujur dan sarankan menghubungi fasilitator. "
     "Format jawaban untuk Telegram (boleh pakai <b>bold</b> dan emoji secukupnya)."
@@ -27,12 +28,12 @@ Kalau bingung soal tahapan atau cara unggah, tanya saja ke aku atau fasilitator.
 
 # User-facing reply strings used when domain rules short-circuit the LLM.
 QUOTA_REACHED_MSG = (
-    "Kamu sudah 2x tanya tentang misi hari ini 😊 "
+    "Kamu sudah 2x tanya tentang challenge hari ini 😊 "
     "Untuk info lengkap silakan buka panduan program ya!"
 )
 
 LAST_FREE_NOTICE = (
-    "\n\nIni adalah info misi terakhir yang bisa aku berikan hari ini. "
+    "\n\nIni adalah info challenge terakhir yang bisa aku berikan hari ini. "
     "Kalau masih ada pertanyaan, cek panduan program ya! 📖"
 )
 

@@ -54,9 +54,10 @@ NOT_REGISTERED_MSG = (
 )
 HELP_MESSAGE = (
     "<b>Chris-Fasil-GBP Bot — apa yang bisa saya bantu?</b>\n\n"
-    "• Kirim laporan: <code>laporan [berat] kg [lokasi]</code>\n"
-    "• /status — progress misi kamu saat ini\n"
-    "• /laporan — format laporan\n"
+    "• 🎯 Tanya soal challenge yang aktif: tahapan, cara ikut, deadline\n"
+    "• ✍️ Minta dibuatkan caption buat postingan (kirim teks atau foto)\n"
+    "• 💬 Info plastik, daur ulang, lingkungan, atau butuh motivasi 💪🏻\n"
+    "• /status — status kamu\n"
     "• /help — pesan ini\n\n"
     "Di grup: mention saya (@bot) atau reply pesan saya.\n"
     "Di DM: langsung ketik saja, saya selalu mendengarkan."
@@ -342,7 +343,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             update,
             context,
             f"Selamat datang kembali, <b>{volunteer['name']}</b>! 🌱\n"
-            f"Ketik /status untuk lihat progress, atau /help untuk bantuan.",
+            f"Ketik /status untuk lihat status kamu, atau /help untuk bantuan.",
         )
     else:
         await send_response(update, context, NOT_REGISTERED_MSG)
@@ -360,19 +361,18 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await send_response(update, context, NOT_REGISTERED_MSG)
         return
 
-    total = await _total_collected_kg(volunteer["id"])
-    quota = float(volunteer.get("quota_kg") or 0)
     mission = _get_active_mission(volunteer["id"])
 
     lines = [
         f"<b>Status {volunteer['name']}</b>",
         f"Area: {volunteer.get('area', '-')}",
-        f"Terkumpul: <b>{total:g} kg</b> dari target {quota:g} kg",
     ]
     if mission:
-        lines.append(f"Misi aktif: {mission.get('title')} (deadline {mission.get('deadline')})")
+        lines.append(
+            f"Challenge aktif: {mission.get('title')} (deadline {mission.get('deadline')})"
+        )
     else:
-        lines.append("Belum ada misi aktif yang diassign.")
+        lines.append("Yuk ikut challenge yang sedang aktif! Tanya aku soal caranya ya 🌱")
 
     await send_response(update, context, "\n".join(lines))
 

@@ -54,7 +54,7 @@ def format_weekly_fact_message(iso_week: int) -> str:
 # Job 2 — Pre-mission education brief                                          #
 # --------------------------------------------------------------------------- #
 
-MISSION_EDUCATION_BRIEF: str = """📋 *Panduan Lapangan — Misi Baru Dimulai!*
+MISSION_EDUCATION_BRIEF: str = """📋 *Panduan Lapangan: Challenge Baru Dimulai!*
 
 Sebelum turun ke lapangan, ini yang perlu kamu ingat:
 

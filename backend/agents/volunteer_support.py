@@ -62,7 +62,7 @@ OFF_TOPIC_KEYWORDS = (
 
 OFF_TOPIC_RESPONSE = (
     "Maaf, aku hanya bisa bantu soal program dan lingkungan hidup ya! 🌱 "
-    "Ada yang ingin kamu tanyakan tentang misi atau plastik?"
+    "Ada yang ingin kamu tanyakan tentang challenge atau plastik?"
 )
 
 TOPIC_CLASSIFY_PROMPT = (
@@ -351,10 +351,7 @@ class VolunteerSupportAgent(BaseAgent):
             f"Nama: {volunteer.get('name') or '-'}\n"
             f"Area: {area}\n"
             f"Tim: {team_str}\n"
-            f"Progress misi: {reported_kg:g}/{quota_kg:g} kg ({pct:.0f}%)\n"
-            f"Minggu aktif: {weeks_active} minggu\n"
-            f"Deadline: {deadline_str} ({days_left_str})\n"
-            f"Status: {status}"
+            f"Minggu aktif: {weeks_active} minggu"
         )
 
     @staticmethod

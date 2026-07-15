@@ -179,7 +179,7 @@ class BriefMission:
             "Data volunteer:\n"
             f"- Nama: {volunteer.name}\n"
             f"- Area tugas: {area}\n"
-            f"- Mode misi: {mode_label}\n"
+            f"- Mode: {mode_label}\n"
             f"- Tim: {team_label}"
         )
 
@@ -193,7 +193,7 @@ class BriefMission:
                 else "tidak diketahui"
             )
             mission_section = (
-                "Misi aktif:\n"
+                "Challenge aktif:\n"
                 f"- Judul: {mission.title}\n"
                 f"- Deskripsi: {mission.description or '-'}\n"
                 f"- Deadline: {mission.deadline} ({remaining_text})"

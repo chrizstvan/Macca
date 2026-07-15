@@ -13,11 +13,11 @@ logger = logging.getLogger(__name__)
 MISSION_QUERY_DAILY_LIMIT = 2
 
 QUOTA_REACHED_MSG = (
-    "Kamu sudah 2x tanya tentang misi hari ini 😊 "
+    "Kamu sudah 2x tanya tentang challenge hari ini 😊 "
     "Untuk info lengkap silakan buka panduan program ya!"
 )
 LAST_FREE_NOTICE = (
-    "\n\nIni adalah info misi terakhir yang bisa aku berikan hari ini. "
+    "\n\nIni adalah info challenge terakhir yang bisa aku berikan hari ini. "
     "Kalau masih ada pertanyaan, cek panduan program ya! 📖"
 )
 
@@ -31,7 +31,7 @@ LAST_FREE_NOTICE = (
     examples=(
         "apa tugas saya minggu ini?",
         "gimana cara bedain plastik pet sama hdpe?",
-        "deadline misi kapan ya?",
+        "deadline challenge kapan ya?",
         "area saya di mana?",
         "kuota saya berapa kg?",
         "apa yang harus saya lakukan hari ini?",
@@ -139,7 +139,7 @@ class MissionBriefingAgent(BaseAgent):
     @staticmethod
     def _format_fasilitator_briefing(missions: list[dict]) -> str:
         if not missions:
-            return "Tidak ada misi aktif saat ini."
+            return "Tidak ada challenge aktif saat ini."
         lines: list[str] = []
         for entry in missions:
             mission = entry["mission"]
@@ -152,5 +152,5 @@ class MissionBriefingAgent(BaseAgent):
                     f"{a['reported_kg']:g}/{a['quota_kg']:g} kg @ "
                     f"{a['assigned_area']}"
                 )
-        return "Data misi aktif:\n" + "\n".join(lines)
+        return "Data challenge aktif:\n" + "\n".join(lines)
 

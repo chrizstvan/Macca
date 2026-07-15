@@ -356,9 +356,9 @@ class ProgressTrackerAgent(BaseAgent):
         mission = context.get("mission") or self._get_active_mission(volunteer["id"])
         if mission is None:
             await _alert_fasilitator(
-                f"⚠️ Form dari {name} tapi tidak ada misi aktif: {kg:g} kg - {location}"
+                f"⚠️ Form dari {name} tapi tidak ada challenge aktif: {kg:g} kg - {location}"
             )
-            return "Tidak ada misi aktif untuk volunteer ini."
+            return "Tidak ada challenge aktif untuk volunteer ini."
 
         # Form submissions go through the same use case as chat reports.
         # context["volunteer"]/["mission"] are already populated above so
@@ -695,7 +695,7 @@ class ProgressTrackerAgent(BaseAgent):
         pct = (total_reported / quota * 100) if quota else 0
 
         if pct >= 100:
-            status_line = "🎉 SELESAI! Kamu sudah memenuhi kuota misimu!"
+            status_line = "🎉 Keren! Terus semangat ikut challenge ya!"
         elif pct >= 75:
             status_line = f"Hampir selesai! Sisa {remaining:.1f} kg lagi 💪"
         elif pct >= 50:
@@ -778,7 +778,7 @@ class ProgressTrackerAgent(BaseAgent):
         missions_repo = build_mission_repository()
         missions = await missions_repo.list_active()
         if not missions:
-            return "Belum ada misi aktif. Tidak ada progress untuk dirangkum."
+            return "Belum ada challenge aktif untuk dirangkum."
 
         chunks: list[str] = []
         for mission in missions:

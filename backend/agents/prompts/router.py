@@ -18,7 +18,7 @@ Kategori:
 Contoh:
 "apa tugas saya minggu ini?" → mission_briefing
 "gimana cara bedain plastik pet sama hdpe?" → mission_briefing
-"deadline misi kapan ya?" → mission_briefing
+"deadline challenge kapan ya?" → mission_briefing
 "area saya di mana?" → mission_briefing
 "kuota saya berapa kg?" → mission_briefing
 "apa yang harus saya lakukan hari ini?" → mission_briefing
@@ -35,9 +35,9 @@ Contoh:
 "timbangan saya rusak, gimana dong?" → volunteer_support
 "halo, bot ini bisa apa aja?" → volunteer_support
 "minggu depan saya tidak bisa ikut, izin ya" → volunteer_support
-"buatkan caption instagram hari ini" → content_creator
-"tolong bikin post story wa tentang misi minggu ini" → content_creator
-"bikin teks pengumuman buat grup dong" → content_creator
+"buatkan caption instagram hari ini" → make_caption
+"tolong bikin post story wa tentang challenge minggu ini" → make_caption
+"bikin teks pengumuman buat grup dong" → make_caption
 "total program berapa kg sejauh ini?" → impact_analyzer
 "sudah berapa total yang terkumpul?" → impact_analyzer
 "berapa volunteer aktif sekarang?" → impact_analyzer

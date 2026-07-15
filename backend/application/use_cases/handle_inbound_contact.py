@@ -39,9 +39,10 @@ GREETING_TOKENS: tuple[str, ...] = (
 
 WELCOME_TEMPLATE = (
     "Halo {name}! 👋 Selamat datang di WhatsApp Chris-Fasil-GBP — Generasi Bebas Plastik.\n\n"
-    "Nomor kamu sudah terhubung dengan akun volunteer. Kamu bisa mulai "
-    "kirim laporan, tanya misi, atau minta dukungan kapan saja di chat ini.\n\n"
-    "Ketik *halo* atau */mulai* untuk lihat ringkasan status kamu."
+    "Nomor kamu sudah terhubung dengan akun volunteer. Kamu bisa tanya soal "
+    "challenge yang aktif, minta dibuatkan caption, atau minta dukungan kapan "
+    "saja di chat ini.\n\n"
+    "Ketik *halo* untuk lihat apa saja yang bisa aku bantu."
 )
 
 UNKNOWN_REDIRECT = (
