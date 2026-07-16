@@ -61,12 +61,24 @@ CLOSE_THANKS_TRIGGERS = frozenset({
     "tengkyu", "trims", "makasi", "suwun", "nuhun", "ok makasih", "oke makasih",
     "sip makasih", "mantap makasih",
 })
+# Acknowledgement — e.g. replying "ok"/"siap"/"baik" to a reminder.
+CLOSE_ACK_TRIGGERS = frozenset({
+    "ok", "oke", "okay", "okey", "okee", "oke deh", "okedeh", "ok deh",
+    "baik", "baik kak", "baik deh", "baiklah", "oke baik",
+    "siap", "siap kak", "siap deh", "oke siap", "siap ok", "siyap",
+    "noted", "not", "sip", "sip kak", "sipp", "mantap", "mantul", "oke mantap",
+    "paham", "ngerti", "mengerti", "dimengerti", "roger", "oke noted",
+    "iya", "iya kak", "iyaa", "iyap", "yoi", "yaudah oke",
+})
 CLOSE_DECLINE_MSG = (
     "Siap! 🌱 Kalau nanti butuh bantuan, langsung chat aku aja "
     "ya. Semangat! 💪"
 )
 CLOSE_THANKS_MSG = (
     "Sama-sama! 😊 Senang bisa bantu 🌱"
+)
+CLOSE_ACK_MSG = (
+    "Siap, mantap! 🌱 Semangat ya, kalau butuh apa-apa chat aku lagi aja 💪"
 )
 
 
@@ -368,6 +380,8 @@ class RouterAgent(BaseAgent):
             return None
         if normalized in CLOSE_THANKS_TRIGGERS:
             return CLOSE_THANKS_MSG
+        if normalized in CLOSE_ACK_TRIGGERS:
+            return CLOSE_ACK_MSG
         if normalized in CLOSE_DECLINE_TRIGGERS:
             return CLOSE_DECLINE_MSG
         return None
@@ -418,7 +432,7 @@ class RouterAgent(BaseAgent):
             except Exception as exc:
                 logger.warning("Quiz score refresh failed: %s", exc)
             return (
-                f"🎉 Tepat sekali! +{outcome.points_awarded} poin.\n\n"
+                "🎉 Tepat sekali! 👏\n\n"
                 f"{outcome.quiz.explanation}"
             )
         # Incorrect

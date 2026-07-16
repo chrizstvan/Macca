@@ -149,6 +149,5 @@ def format_quiz_message(quiz: QuizSpec) -> str:
         "🧠 *Quiz Plastik Minggu Ini!*\n\n"
         f"{quiz['question']}\n\n"
         f"{options}\n\n"
-        "Balas dengan huruf jawabanmu (A/B/C/D)!\n"
-        f"Jawaban benar dapat poin +{QUIZ_POINTS_CORRECT} 🏆"
+        "Balas dengan huruf jawabanmu (A/B/C/D)! 🌱"
     )
