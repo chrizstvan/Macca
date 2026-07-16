@@ -56,10 +56,12 @@ _ABSOLUTE_HINTS = (
 _DATETIME_PROMPT_TEMPLATE = (
     "Sekarang: {now} WIB ({weekday}).\n"
     'Ubah ke datetime: "{text}"\n'
-    "Jawab HANYA format ISO: YYYY-MM-DD HH:MM\n"
+    "Jawab HANYA format ISO: YYYY-MM-DD HH:MM (zona waktu WIB).\n"
     'Kalau tidak ada info waktu jelas, jawab "NONE".\n'
     '"jam 7 malam"=19:00, "jam 8 pagi"=08:00, "jam 2 siang"=14:00, '
-    '"jam 5 sore"=17:00'
+    '"jam 5 sore"=17:00.\n'
+    'Kalau cuma "jam 10" tanpa pagi/siang/sore/malam, artinya 10:00 '
+    "(jam apa adanya, format 24 jam). Semua waktu WIB."
 )
 
 
@@ -100,7 +102,7 @@ class ScheduleParser:
             return {
                 "mode": "relative",
                 "send_at": send_at,
-                "label": f"{n} {unit} lagi ({send_at.strftime('%H:%M, %d %b')})",
+                "label": f"{n} {unit} lagi (jam {send_at.strftime('%H:%M')} WIB, {send_at.strftime('%d %b')})",
             }
 
         # MODE 3 — Absolute datetime (LLM-parsed Indonesian).
@@ -110,7 +112,7 @@ class ScheduleParser:
                 return {
                     "mode": "absolute",
                     "send_at": parsed_dt,
-                    "label": parsed_dt.strftime("%H:%M, %d %B %Y"),
+                    "label": f"jam {parsed_dt.strftime('%H:%M')} WIB, {parsed_dt.strftime('%d %B %Y')}",
                 }
 
         # MODE 1 — Default delay (plain "kirim").
@@ -119,7 +121,7 @@ class ScheduleParser:
         return {
             "mode": "default_delay",
             "send_at": send_at,
-            "label": f"{delay_hours} jam lagi ({send_at.strftime('%H:%M, %d %b')})",
+            "label": f"{delay_hours} jam lagi (jam {send_at.strftime('%H:%M')} WIB, {send_at.strftime('%d %b')})",
         }
 
     # ------------------------------------------------------------------ #

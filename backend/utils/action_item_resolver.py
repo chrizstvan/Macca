@@ -35,6 +35,7 @@ _TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "pre_test": ("pre test", "pre-test", "pretest", "tes awal"),
     "post_test": ("post test", "post-test", "posttest", "tes akhir"),
     "buku_saku": ("buku saku", "panduan", "handbook", "pocket book"),
+    "bahi": ("bahi", "belajar apa hari ini", "belajar hari ini", "belajar"),
     "tautan": ("tautan", "link", "form", "isi"),
 }
 

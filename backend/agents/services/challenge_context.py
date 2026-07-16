@@ -23,7 +23,14 @@ _HEADER = (
     "hashtag/tag, deadline, format konten), pandu berdasarkan detail ini. "
     "JANGAN mengarang aturan, tanggal, atau hashtag yang tidak tertulis di "
     "sini. Kamu TIDAK menghitung skor — kalau ditanya soal nilai/poin, arahkan "
-    "ke fasilitator atau gform."
+    "ke fasilitator atau gform.\n"
+    "PENTING soal LOKASI/TEMPAT (mis. bank sampah): JANGAN PERNAH mengarang "
+    "alamat, nama tempat, atau lokasi spesifik — kamu tidak punya data lokasi "
+    "yang akurat. Kalau volunteer minta lokasi/tempat, PANDU cara survei "
+    "sendiri: minta mereka buka Google Maps dan cari, mis. \"bank sampah "
+    "[nama kecamatan/area]\", cek jam buka/kontak di Maps, lalu catat dan "
+    "input hasilnya ke Google Form sesuai ketentuan challenge (pastikan belum "
+    "terdaftar di sheet panitia). Bantu juga dengan tips survei, bukan alamat."
 )
 
 

@@ -38,9 +38,10 @@ TYPE_LABELS = {
     "post_test": "📝 Post-Test",
     "tautan": "🔗 Tautan Penting",
     "buku_saku": "📖 Buku Saku",
+    "bahi": "🧠 BAHI (Belajar Apa Hari Ini)",
 }
 
-LINK_TYPES = {"submission", "pre_test", "post_test", "tautan", "buku_saku"}
+LINK_TYPES = {"submission", "pre_test", "post_test", "tautan", "buku_saku", "bahi"}
 DEADLINE_TYPES = {"challenge", "submission", "presensi", "pre_test", "post_test"}
 SCHED_TYPES = {"kelas", "presensi"}
 

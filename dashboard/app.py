@@ -54,6 +54,7 @@ TYPE_LABELS = {
     "post_test": "📝 Post-Test",
     "tautan": "🔗 Tautan",
     "buku_saku": "📖 Buku Saku",
+    "bahi": "🧠 BAHI",
 }
 
 st.set_page_config(

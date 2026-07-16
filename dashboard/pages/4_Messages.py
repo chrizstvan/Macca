@@ -64,6 +64,7 @@ _TYPE_LABELS = {
     "post_test": "📝 Post-Test",
     "tautan": "🔗 Tautan",
     "buku_saku": "📖 Buku Saku",
+    "bahi": "🧠 BAHI",
 }
 
 
@@ -132,6 +133,11 @@ def _reminder_text(item: dict) -> str:
         if link:
             base += f": {link}"
         return base + " 🔗"
+    if t == "bahi":
+        base = f"🧠 Belajar Apa Hari Ini: *{title}*"
+        if link:
+            base += f"\n{link}"
+        return base + "\nYuk luangkan waktu belajar sebentar ya! 🌱"
     # Fallback
     return f"Reminder: *{title}*" + (f" (deadline {dl})" if dl else "")
 
