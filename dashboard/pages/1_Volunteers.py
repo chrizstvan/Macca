@@ -90,7 +90,7 @@ if not view.empty:
     edit_cols = [
         c
         for c in (
-            "name", "phone", "area", "is_active",
+            "name", "full_name", "phone", "area", "is_active",
             "team", "whatsapp_connected", "last_contact_at",
         )
         if c in view.columns
@@ -99,6 +99,8 @@ if not view.empty:
     # Ensure team is a string-like column so the data_editor renders an
     # empty cell as "" rather than NaN.
     editable_df["team"] = editable_df["team"].fillna("").astype(str)
+    if "full_name" in editable_df.columns:
+        editable_df["full_name"] = editable_df["full_name"].fillna("").astype(str)
     if "is_active" in editable_df.columns:
         editable_df["is_active"] = (
             editable_df["is_active"].fillna(False).astype(bool)
@@ -108,7 +110,8 @@ if not view.empty:
         editable_df,
         column_config={
             "id": None,  # hide UUID
-            "name": st.column_config.TextColumn("Nama", disabled=True),
+            "name": st.column_config.TextColumn("Panggilan", disabled=True),
+            "full_name": st.column_config.TextColumn("Nama Lengkap"),
             "phone": st.column_config.TextColumn("Nomor HP", disabled=True),
             "area": st.column_config.TextColumn("Area"),
             "is_active": st.column_config.CheckboxColumn(
@@ -160,6 +163,8 @@ if not view.empty:
                 patch["team"] = new_team if new_team else None
             if (new_row.get("area") or "") != (orig_row.get("area") or ""):
                 patch["area"] = (new_row.get("area") or "").strip() or None
+            if (new_row.get("full_name") or "") != (orig_row.get("full_name") or ""):
+                patch["full_name"] = (new_row.get("full_name") or "").strip() or None
             if bool(new_row.get("is_active")) != bool(orig_row.get("is_active")):
                 patch["is_active"] = bool(new_row.get("is_active"))
             if not patch:
@@ -277,8 +282,13 @@ if not view.empty:
 with st.expander("➕ Tambah Volunteer Baru"):
     with st.form("add_volunteer", clear_on_submit=True):
         f1, f2 = st.columns(2)
-        name = f1.text_input("Nama Lengkap *")
+        name = f1.text_input(
+            "Nama Panggilan *", help="Dipakai bot untuk menyapa (cth: Rizki)"
+        )
         phone = f2.text_input("Nomor HP *", placeholder="08123456789")
+        full_name = st.text_input(
+            "Nama Lengkap", placeholder="cth: Rizki Pratama (opsional)"
+        )
         area = st.text_input(
             "Area Tugas", placeholder="Kosongkan → default Jakarta"
         )
@@ -301,7 +311,7 @@ with st.expander("➕ Tambah Volunteer Baru"):
         if submitted:
             tg_raw = telegram_id.strip()
             if not name or not phone:
-                st.error("Nama dan nomor HP wajib diisi!")
+                st.error("Nama panggilan dan nomor HP wajib diisi!")
             elif tg_raw and not tg_raw.isdigit():
                 st.error("Telegram ID harus berupa angka (atau kosongkan).")
             else:
@@ -312,6 +322,8 @@ with st.expander("➕ Tambah Volunteer Baru"):
                     "area": area.strip() or "Jakarta",
                     "is_active": True,
                 }
+                if full_name.strip():
+                    payload["full_name"] = full_name.strip()
                 if team.strip():
                     payload["team"] = team.strip()
                 if tg_raw:
@@ -340,15 +352,15 @@ with st.expander("➕ Tambah Volunteer Baru"):
 
 
 CSV_TEMPLATE = (
-    "name,phone,area,team,telegram_id\n"
-    "Rizki Pratama,08123456789,Menteng,Tim Cikini,\n"
+    "name,full_name,phone,area,team,telegram_id\n"
+    "Rizki,Rizki Pratama,08123456789,Menteng,Tim Cikini,\n"
 )
 
 with st.expander("📥 Import dari CSV"):
     st.caption(
-        "Kolom wajib: ``name``, ``phone``. "
-        "Opsional: ``area`` (default Jakarta), ``team``, ``telegram_id``. "
-        "Phone akan dinormalisasi ke format ``62…``."
+        "Kolom wajib: ``name`` (panggilan), ``phone``. "
+        "Opsional: ``full_name`` (nama lengkap), ``area`` (default Jakarta), "
+        "``team``, ``telegram_id``. Phone dinormalisasi ke format ``62…``."
     )
     st.download_button(
         "Download template CSV",
@@ -374,6 +386,9 @@ with st.expander("📥 Import dari CSV"):
                     "area": str(raw.get("area") or "").strip() or "Jakarta",
                     "is_active": True,
                 }
+                full_val = str(raw.get("full_name") or "").strip()
+                if full_val:
+                    row["full_name"] = full_val
                 team_val = (raw.get("team") or "").strip() if isinstance(raw.get("team"), str) else ""
                 if team_val:
                     row["team"] = team_val

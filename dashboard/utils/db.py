@@ -119,7 +119,7 @@ def get_volunteers(active_only: bool = False) -> pd.DataFrame:
     """All volunteer rows. Pass ``active_only=True`` to filter on ``is_active``."""
     db = get_client()
     query = db.table("volunteers").select(
-        "id, name, phone, telegram_id, area, quota_kg, team, "
+        "id, name, full_name, phone, telegram_id, area, quota_kg, team, "
         "is_active, whatsapp_connected, last_contact_at"
     )
     if active_only:
