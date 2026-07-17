@@ -108,6 +108,23 @@ class ActionItemResolver:
         # Layer 3: Claude semantic match over all active titles.
         return await self._semantic_match(cleaned, type_hint)
 
+    async def resolve_for_reminder(
+        self, text: str, type_hint: str | None = None
+    ) -> dict | list[dict] | None:
+        """Resolve reminder data — dashboard (action_items) wins, buku saku fallback.
+
+        Tries the existing :meth:`find_by_mention` first; only when that finds
+        nothing does it fall back to the static buku saku reminder catalog. Buku
+        saku hits are tagged ``_source="buku_saku"`` by ``match_buku_saku_item``.
+        """
+        dashboard_match = await self.find_by_mention(text, type_hint)
+        if dashboard_match:
+            return dashboard_match
+
+        from backend.knowledge.buku_saku_reminders import match_buku_saku_item
+
+        return match_buku_saku_item(text, type_hint)
+
     async def _semantic_match(
         self, text: str, type_hint: str | None
     ) -> dict | None:

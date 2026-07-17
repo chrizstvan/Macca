@@ -38,11 +38,11 @@ GREETING_TOKENS: tuple[str, ...] = (
 )
 
 WELCOME_TEMPLATE = (
-    "Halo {name}! 👋 Selamat datang di WhatsApp Chris-Fasil-GBP — Generasi Bebas Plastik.\n\n"
-    "Nomor kamu sudah terhubung dengan akun volunteer. Kamu bisa tanya soal "
-    "challenge yang aktif, minta dibuatkan caption, atau minta dukungan kapan "
-    "saja di chat ini.\n\n"
-    "Ketik *halo* untuk lihat apa saja yang bisa aku bantu."
+    "Hi {name}, selamat mengikuti kegiatan volunteering Generasi Bebas Plastik ya! 🌱\n\n"
+    "Kalau kamu belum tergabung di grup WhatsApp Kelompok 25, gabung yuk di sini:\n"
+    "https://chat.whatsapp.com/LXHEKUyqyEfL1fDJOKQclA\n\n"
+    "Biar kita bisa berinteraksi dengan teman-teman seperjuangan dan dapat info "
+    "serta bantuan yang lengkap 😊"
 )
 
 UNKNOWN_REDIRECT = (
@@ -120,14 +120,13 @@ class HandleInboundContact:
         await self.volunteers.save(volunteer)
 
         if is_first:
-            # Scenario A — first contact.
+            # Scenario A — first contact. Whatever the volunteer typed first,
+            # reply with the welcome only (don't also route the message).
             await self.notifier.alert_fasilitator(
                 f"✅ {volunteer.name} just connected via WhatsApp "
                 f"({canonical})."
             )
-            return ReplyAndContinue(
-                pre_messages=[WELCOME_TEMPLATE.format(name=volunteer.name)]
-            )
+            return ReplyAndStop(text=WELCOME_TEMPLATE.format(name=volunteer.name))
 
         # Scenario C — returning volunteer.
         if self._is_greeting(message):

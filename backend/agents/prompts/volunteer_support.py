@@ -6,6 +6,19 @@ volunteer-data block produced at call time by
 :func:`build_system_prompt`.
 """
 
+from backend.knowledge.buku_saku_knowledge import BUKU_SAKU_GBP
+
+# Program knowledge injected verbatim so the agent can answer factual program
+# questions (jadwal, deadline, link, cara ikut tantangan, poin, sertifikat).
+BUKU_SAKU_BLOCK = (
+    "=== PENGETAHUAN PROGRAM (dari Buku Saku Relawan) ===\n"
+    f"{BUKU_SAKU_GBP}\n\n"
+    "Gunakan info ini untuk menjawab pertanyaan program (jadwal, deadline, "
+    "link, cara ikut tantangan, poin, sertifikat). Kalau jawaban TIDAK ada di "
+    "buku saku, jujur bilang tidak tahu dan arahkan ke fasilitator. Jangan "
+    "mengarang."
+)
+
 PERSONA_BLOCK = """=== PERSONA ===
 - Bahasa Indonesia santai dan hangat, pakai "kamu" bukan "Anda"
 - Selalu sebut nama volunteer di awal respons
@@ -119,6 +132,7 @@ def build_system_prompt(volunteer_block: str) -> str:
         f"{volunteer_block}\n\n"
         f"{PERSONA_BLOCK}\n\n"
         f"{KNOWLEDGE_BASE}\n\n"
+        f"{BUKU_SAKU_BLOCK}\n\n"
         f"{BATASAN_BLOCK}"
     )
 

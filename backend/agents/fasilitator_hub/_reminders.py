@@ -134,7 +134,7 @@ class ReminderMixin:
         mention = self._extract_mention(message)
         type_hint = await resolver.detect_type_from_message(message)
         try:
-            item = await resolver.find_by_mention(mention, type_hint)
+            item = await resolver.resolve_for_reminder(mention, type_hint)
         except Exception as exc:
             logger.warning("action-item lookup failed: %s", exc)
             return (
@@ -145,7 +145,7 @@ class ReminderMixin:
         # No match → tell the fasilitator to add it first.
         if item is None:
             return (
-                f"Action item '{mention}' belum ada di dashboard. "
+                f"Action item '{mention}' belum ada di dashboard atau buku saku. "
                 "Tambahkan dulu ya."
             )
 
@@ -159,12 +159,18 @@ class ReminderMixin:
 
         persona = await self._load_persona()
         draft = await ReminderGenerator().generate_draft(item, persona)
-        return await self._park_reminder_draft(
+        reply = await self._park_reminder_draft(
             draft,
             context=context,
             action_item_id=item.get("id"),
             type_=item.get("type"),
         )
+        if item.get("_source") == "buku_saku":
+            reply += (
+                "\n\n_(data dari buku saku — kalau mau ubah deadline/link, "
+                "tambahkan di dashboard)_"
+            )
+        return reply
 
     async def _park_reminder_draft(
         self,
