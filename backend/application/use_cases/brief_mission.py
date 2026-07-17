@@ -24,6 +24,7 @@ from backend.application.ports.report_repository import ReportRepository
 from backend.application.ports.volunteer_repository import VolunteerRepository
 from backend.application.use_cases._prompts import (
     BASE_BRIEFING_PROMPT,
+    BUKU_SAKU_SECTION,
     NO_ACTIVE_MISSION_HINT,
     SOP_SECTION,
 )
@@ -205,5 +206,6 @@ class BriefMission:
             f"{BASE_BRIEFING_PROMPT}\n\n"
             f"{volunteer_section}\n\n"
             f"{mission_section}\n\n"
-            f"{SOP_SECTION}"
+            f"{SOP_SECTION}\n\n"
+            f"{BUKU_SAKU_SECTION}"
         )

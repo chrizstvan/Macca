@@ -432,9 +432,12 @@ if not df.empty:
 
         if st.button("📋 Tampilkan Pesan Undangan"):
             msg = (
-                "Halo! Silakan daftar ke bot program WA dengan kirim pesan "
-                "'halo' ke nomor bot, atau ke Telegram: "
-                "t.me/gbp_bot?start=gbp2026"
+                "Halo! 🌱 Yuk gabung program relawan Generasi Bebas Plastik.\n"
+                "Kirim pesan 'halo' ke nomor bot WhatsApp ini biar terhubung ya.\n\n"
+                "Sekalian gabung grup WhatsApp Kelompok 25 di sini:\n"
+                "https://chat.whatsapp.com/LXHEKUyqyEfL1fDJOKQclA\n\n"
+                "Biar kita bisa berinteraksi dengan teman-teman seperjuangan "
+                "dan dapat info serta bantuan yang lengkap 😊"
             )
             st.code(msg)
             st.info("Copy pesan di atas dan kirim ke volunteer yang belum connect.")

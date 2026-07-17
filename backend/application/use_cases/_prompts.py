@@ -5,6 +5,19 @@ import presentation-layer strings; agents that still need these strings
 can re-export from here.
 """
 
+from backend.knowledge.buku_saku_knowledge import BUKU_SAKU_GBP
+
+# Program knowledge (jadwal kelas, deadline, link, poin, sertifikat) so the
+# mission/challenge briefing can answer factual program questions.
+BUKU_SAKU_SECTION = (
+    "=== PENGETAHUAN PROGRAM (dari Buku Saku Relawan) ===\n"
+    f"{BUKU_SAKU_GBP}\n\n"
+    "Gunakan info ini untuk menjawab pertanyaan program (jadwal kelas, "
+    "deadline, link, cara ikut challenge, poin, sertifikat). Kalau jawaban "
+    "TIDAK ada di buku saku, jujur bilang tidak tahu dan arahkan ke "
+    "fasilitator. Jangan mengarang."
+)
+
 BASE_BRIEFING_PROMPT = (
     "Kamu adalah asisten challenge untuk Chris-Fasil-GBP, platform koordinasi volunteer "
     "Generasi Bebas Plastik. "
