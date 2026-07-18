@@ -537,6 +537,54 @@ async def admin_send_welcome(
     }
 
 
+@app.post("/admin/elections/action")
+async def admin_election_action(
+    payload: dict = Body(...),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Drive an election phase transition — same functions the WA commands use.
+
+    Body: ``{team: str, action: str}`` where action is one of open_nomination,
+    close_nomination, open_voting, close_voting, finalize, announce.
+    """
+    _require_admin(authorization)
+
+    team = (payload.get("team") or "").strip()
+    action = (payload.get("action") or "").strip()
+    if not team or not action:
+        raise HTTPException(status_code=400, detail="team + action required")
+
+    from backend.agents.election_handler import (
+        announce_result,
+        close_nomination,
+        close_voting,
+        finalize_election,
+        open_nomination,
+        open_voting,
+    )
+
+    funcs = {
+        "open_nomination": open_nomination,
+        "close_nomination": close_nomination,
+        "open_voting": open_voting,
+        "close_voting": close_voting,
+        "finalize": finalize_election,
+        "announce": announce_result,
+    }
+    fn = funcs.get(action)
+    if fn is None:
+        raise HTTPException(status_code=400, detail=f"unknown action: {action}")
+
+    try:
+        message = await fn(team)
+    except Exception as exc:
+        logger.exception("election action %s failed: %s", action, exc)
+        raise HTTPException(
+            status_code=500, detail=f"election action failed: {exc}"
+        ) from exc
+    return {"ok": True, "message": message}
+
+
 @app.post("/admin/rankings/recalculate")
 async def admin_rankings_recalculate(
     authorization: str | None = Header(default=None),

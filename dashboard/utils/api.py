@@ -122,6 +122,15 @@ def recalculate_rankings() -> dict[str, Any]:
     return _post("/admin/rankings/recalculate", {})
 
 
+def election_action(team: str, action: str) -> dict[str, Any]:
+    """Drive an election phase (same backend functions as the WA commands).
+
+    ``action`` ∈ open_nomination, close_nomination, open_voting, close_voting,
+    finalize, announce. Returns ``{ok, message}``.
+    """
+    return _post("/admin/elections/action", {"team": team, "action": action})
+
+
 def generate_content(
     *, topic: str, tone: str, audience: str
 ) -> dict[str, Any]:

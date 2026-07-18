@@ -41,6 +41,7 @@ from .persistence.supabase_report_repo import SupabaseReportRepository
 from .persistence.supabase_content_draft_repo import (
     SupabaseContentDraftRepository,
 )
+from .persistence.supabase_election_repo import SupabaseElectionRepository
 from .persistence.supabase_quiz_draft_repo import SupabaseQuizDraftRepository
 from .persistence.supabase_scheduled_message_repo import (
     SupabaseScheduledMessageRepository,
@@ -188,6 +189,11 @@ def build_volunteer_query_repository() -> SupabaseVolunteerQueryRepository:
     return SupabaseVolunteerQueryRepository(db)
 
 
+def build_election_repository() -> SupabaseElectionRepository:
+    """Read/write the ``elections`` per-team state machine."""
+    return SupabaseElectionRepository(db)
+
+
 __all__ = [
     "build_submit_report",
     "build_brief_mission",
@@ -206,4 +212,5 @@ __all__ = [
     "build_mission_repository",
     "build_fasilitator_context_repository",
     "build_volunteer_query_repository",
+    "build_election_repository",
 ]

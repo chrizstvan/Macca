@@ -18,6 +18,7 @@ from ._constants import (
     STRATEGY_KEYWORDS,
 )
 from ._consult import INVITE_CONFIRM_STEP, ConsultMixin
+from ._election import ElectionMixin
 from ._education import EducationDraftMixin
 from ._ondemand import OnDemandDraftMixin
 from ._queries import QueryMixin
@@ -36,6 +37,7 @@ class FasilitatorHubAgent(
     QuizApprovalMixin,
     EducationDraftMixin,
     OnDemandDraftMixin,
+    ElectionMixin,
     QueryMixin,
     BaseAgent,
 ):
@@ -163,6 +165,49 @@ class FasilitatorHubAgent(
         # generate_report / generate_content). Draft-only, never broadcast.
         if self._ondemand_draft_kind(message):
             reply = await self._handle_ondemand_draft(message, context)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+
+        # Election flow — check confirm ("ya mulai pencalonan X") before start
+        # ("mulai pemilihan …"), both before intent classification.
+        if self._is_election_confirm(message):
+            reply = await self._handle_election_confirm(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_start(message):
+            reply = await self._handle_election_start(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_close(message):
+            reply = await self._handle_election_close(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_voting(message):
+            reply = await self._handle_election_voting(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_close_vote(message):
+            reply = await self._handle_election_close_vote(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_finalize(message):
+            reply = await self._handle_election_finalize(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_announce(message):
+            reply = await self._handle_election_announce(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
+        if self._is_election_status(message):
+            reply = await self._handle_election_status(message)
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", reply, self.name)
             return reply

@@ -64,6 +64,16 @@ class SupabaseVolunteerQueryRepository(VolunteerQueryRepository):
             or []
         )
 
+    async def list_by_team(self, team: str) -> list[VolunteerRow]:
+        from backend.infrastructure.persistence._mappers import _coerce_team
+
+        target = (team or "").strip().lower()
+        return [
+            v
+            for v in await self.list_active()
+            if (_coerce_team(v.get("team")) or "").lower() == target
+        ]
+
     async def list_all(self) -> list[VolunteerRow]:
         return (
             self._db.table("volunteers").select("*").execute().data or []

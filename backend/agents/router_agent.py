@@ -345,8 +345,16 @@ class RouterAgent(BaseAgent):
             logger.info("Routing message to %s (persona=fasilitator)", agent.name)
             return await agent.process(message, context)
 
-        # 4. Volunteer (including test-mode impersonation) → classify intent
+        # 4. Volunteer (including test-mode impersonation)
         context["persona"] = "volunteer"
+
+        # Election reply — if the volunteer's team election is open, treat the
+        # message as a nomination/vote before normal intent routing.
+        election_reply = await self._maybe_handle_election_reply(message, context)
+        if election_reply is not None:
+            self.last_agent = "election_reply"
+            return election_reply
+
         intent = await self.classify_intent(message, context)
         agent = self.get_agent_for_intent(intent)
         self.last_agent = agent.name
@@ -387,6 +395,30 @@ class RouterAgent(BaseAgent):
         return None
 
     _QUIZ_LETTERS = {"A", "B", "C", "D"}
+
+    async def _maybe_handle_election_reply(
+        self, message: str, context: dict
+    ) -> str | None:
+        """Record a nomination or final vote when the sender's team election is open.
+
+        Returns None (continue normal routing) when there's no open election
+        phase for the volunteer's team.
+        """
+        volunteer = context.get("volunteer") or await self.get_volunteer_flexible(
+            context
+        )
+        if volunteer is None or not (volunteer.get("team") or "").strip():
+            return None
+
+        from backend.agents.election_handler import (
+            try_handle_nomination,
+            try_handle_vote,
+        )
+
+        reply = await try_handle_nomination(volunteer, message)
+        if reply is not None:
+            return reply
+        return await try_handle_vote(volunteer, message)
 
     async def _maybe_handle_quiz_answer(
         self, message: str, context: dict

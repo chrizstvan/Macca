@@ -31,6 +31,10 @@ class VolunteerQueryRepository(Protocol):
 
     async def list_active(self) -> list[VolunteerRow]: ...
 
+    async def list_by_team(self, team: str) -> list[VolunteerRow]:
+        """Active volunteers in ``team`` (coerced/compared case-insensitively)."""
+        ...
+
     async def list_all(self) -> list[VolunteerRow]:
         """Every volunteer, active or not."""
 
