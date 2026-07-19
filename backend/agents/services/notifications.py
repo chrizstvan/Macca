@@ -87,8 +87,12 @@ async def alert_fasilitator(text: str) -> None:
                 return
 
 
-async def notify_volunteer(volunteer: dict, text: str) -> None:
-    """DM a volunteer on the active channel; fall back to the other."""
+async def notify_volunteer(volunteer: dict, text: str) -> bool:
+    """DM a volunteer on the active channel; fall back to the other.
+
+    Returns True if delivered on some channel, False if every channel failed.
+    (Callers that fire-and-forget can ignore the return value.)
+    """
     phone = (volunteer or {}).get("phone")
     telegram_id = (volunteer or {}).get("telegram_id")
     for channel in _channel_priority():
@@ -96,9 +100,10 @@ async def notify_volunteer(volunteer: dict, text: str) -> None:
             if await _send_whatsapp(
                 phone, text, log_label="notify.notify_volunteer.wa"
             ):
-                return
+                return True
         elif channel == "telegram" and telegram_id:
             if await _send_telegram(
                 telegram_id, text, log_label="notify.notify_volunteer.tg"
             ):
-                return
+                return True
+    return False

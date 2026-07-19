@@ -561,6 +561,7 @@ async def admin_election_action(
         finalize_election,
         open_nomination,
         open_voting,
+        resend_open_blast,
     )
 
     funcs = {
@@ -570,6 +571,7 @@ async def admin_election_action(
         "close_voting": close_voting,
         "finalize": finalize_election,
         "announce": announce_result,
+        "resend": resend_open_blast,
     }
     fn = funcs.get(action)
     if fn is None:

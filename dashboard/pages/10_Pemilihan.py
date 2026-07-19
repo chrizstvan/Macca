@@ -114,15 +114,56 @@ if not election or election["status"] == "draft":
 elif election["status"] == "nomination_open":
     noms = (
         supabase.table("election_nominations")
-        .select("nominator_volunteer_id")
+        .select("nominator_volunteer_id,candidate_name,candidate_phone")
         .eq("election_id", election["id"])
         .execute()
         .data
         or []
     )
     _progress_report({n["nominator_volunteer_id"] for n in noms}, "mencalonkan")
+
+    if noms:
+        name_by_id = {m["id"]: m["name"] for m in _members()}
+
+        # Detail: siapa mencalonkan siapa (nominasi TIDAK rahasia)
+        st.subheader("Detail Pencalonan")
+        st.dataframe(
+            [
+                {
+                    "Pencalon": name_by_id.get(n["nominator_volunteer_id"], "?"),
+                    "Mencalonkan": n.get("candidate_name") or "-",
+                    "Nomor": n.get("candidate_phone") or "-",
+                }
+                for n in noms
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        # Perolehan sementara (group by nomor kandidat)
+        buckets: dict[str, dict] = {}
+        for n in noms:
+            key = n.get("candidate_phone") or (n.get("candidate_name") or "").lower()
+            b = buckets.setdefault(
+                key,
+                {"name": n.get("candidate_name"), "phone": n.get("candidate_phone"), "count": 0},
+            )
+            b["count"] += 1
+        ranking = sorted(buckets.values(), key=lambda c: c["count"], reverse=True)
+        st.subheader("Perolehan Sementara")
+        st.dataframe(
+            [
+                {"Kandidat": c["name"], "Nomor": c["phone"] or "-", "Suara": c["count"]}
+                for c in ranking
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
     if col1.button("Tutup Pencalonan & Rekap"):
         _do("close_nomination", selected_team, "Pencalonan ditutup.")
+    if col2.button("🔁 Resend ke yang belum mencalonkan"):
+        _do("resend", selected_team, "Resend terkirim.")
 
 elif election["status"] == "nomination_closed":
     finalists = (
@@ -160,6 +201,8 @@ elif election["status"] == "voting_open":
     )
     if col1.button("Tutup Voting & Hasil"):
         _do("close_voting", selected_team, "Voting ditutup.")
+    if col2.button("🔁 Resend ke yang belum vote"):
+        _do("resend", selected_team, "Resend terkirim.")
 
 elif election["status"] == "voting_closed":
     votes = (

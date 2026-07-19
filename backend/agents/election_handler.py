@@ -35,17 +35,38 @@ NOMINATION_BLAST = (
 
 
 async def _send_to_many(members: list[dict], text: str) -> dict:
-    """DM ``text`` to every member; returns ``{"sent": n}``. Never raises."""
+    """DM ``text`` to every member. Returns ``{"sent": n, "failed": [rows]}``.
+
+    ``failed`` are volunteers where delivery failed on every channel (e.g. WA
+    24h-window closed, number not whitelisted). Never raises.
+    """
     from backend.agents.services.notifications import notify_volunteer
 
     sent = 0
+    failed: list[dict] = []
     for v in members:
         try:
-            await notify_volunteer(v, text)
-            sent += 1
+            ok = await notify_volunteer(v, text)
         except Exception as exc:  # noqa: BLE001 — one failure must not abort blast
             logger.warning("election blast to %s failed: %s", v.get("name"), exc)
-    return {"sent": sent}
+            ok = False
+        if ok:
+            sent += 1
+        else:
+            failed.append(v)
+    return {"sent": sent, "failed": failed}
+
+
+def _failed_note(failed: list[dict]) -> str:
+    """One-line note listing volunteers the blast could not reach."""
+    if not failed:
+        return ""
+    names = ", ".join(f"{v.get('name')} ({v.get('phone') or '-'})" for v in failed[:15])
+    return (
+        f"\n\n⚠️ {len(failed)} anggota TIDAK terjangkau (mungkin belum pernah "
+        f"chat bot / di luar window 24 jam WA): {names}\n"
+        "Mereka bisa di-resend nanti dari dashboard, atau minta chat bot dulu."
+    )
 
 
 async def start_election_request(team_name: str, context: dict) -> str:
@@ -99,9 +120,10 @@ async def open_nomination(team_name: str) -> str:
 
     return (
         f"Pencalonan kelompok {team_name} DIBUKA.\n"
-        f"Blast terkirim ke {result['sent']} anggota.\n\n"
+        f"Blast terkirim: {result['sent']}/{len(members)} anggota.\n\n"
         "Volunteer sekarang bisa mencalonkan. Kalau sudah cukup, ketik "
         f"'tutup pencalonan {team_name}' untuk rekap."
+        + _failed_note(result["failed"])
     )
 
 
@@ -294,11 +316,23 @@ async def open_voting(team_name: str) -> str:
 
     await repo.update_status(election_id=election["id"], status="voting_open")
 
+    members = await build_volunteer_query_repository().list_by_team(team_name)
+    result = await _send_to_many(members, _voting_blast_text(finalists))
+
+    return (
+        f"Voting final kelompok {team_name} DIBUKA.\n"
+        f"Blast terkirim: {result['sent']}/{len(members)} anggota.\n\n"
+        f"Kalau sudah cukup, ketik 'tutup voting {team_name}' untuk hasil akhir."
+        + _failed_note(result["failed"])
+    )
+
+
+def _voting_blast_text(finalists: list[dict]) -> str:
     options = "\n".join(
         f"{f['slot_number']}. {f['candidate_name']} ({f.get('candidate_phone') or '-'})"
         for f in finalists
     )
-    blast_msg = (
+    return (
         "PEMILIHAN KETUA KELOMPOK - VOTING FINAL\n\n"
         "Ini dia 3 kandidat teratas hasil pencalonan!\n"
         "Pilih 1 yang menurutmu paling cocok jadi ketua:\n\n"
@@ -308,15 +342,6 @@ async def open_voting(team_name: str) -> str:
         "PENTING: Kamu hanya bisa vote SATU KALI dan TIDAK BISA DIUBAH.\n"
         "Pikirkan baik-baik dulu sebelum mengirim ya!\n\n"
         "Ketua = suara terbanyak, Wakil = suara terbanyak kedua."
-    )
-
-    members = await build_volunteer_query_repository().list_by_team(team_name)
-    result = await _send_to_many(members, blast_msg)
-
-    return (
-        f"Voting final kelompok {team_name} DIBUKA.\n"
-        f"Blast terkirim ke {result['sent']} anggota.\n\n"
-        f"Kalau sudah cukup, ketik 'tutup voting {team_name}' untuk hasil akhir."
     )
 
 
@@ -506,7 +531,56 @@ async def announce_result(team_name: str) -> str:
 
     members = await build_volunteer_query_repository().list_by_team(team_name)
     result = await _send_to_many(members, announce)
-    return f"Pengumuman hasil kelompok {team_name} terkirim ke {result['sent']} anggota. 🎉"
+    return (
+        f"Pengumuman hasil kelompok {team_name} terkirim: "
+        f"{result['sent']}/{len(members)} anggota. 🎉"
+        + _failed_note(result["failed"])
+    )
+
+
+async def resend_open_blast(team_name: str) -> str:
+    """Re-blast the current-phase prompt only to members who haven't responded.
+
+    Works during nomination_open (non-nominators) and voting_open (non-voters).
+    Additive — no state change; safe to run anytime.
+    """
+    from backend.infrastructure.composition_root import (
+        build_election_repository,
+        build_volunteer_query_repository,
+    )
+
+    repo = build_election_repository()
+    election = await repo.get_active(team_name)
+    if not election:
+        return f"Tidak ada pemilihan aktif untuk {team_name}."
+
+    status = election.get("status")
+    members = await build_volunteer_query_repository().list_by_team(team_name)
+
+    if status == "nomination_open":
+        noms = await repo.list_nominations(election_id=election["id"])
+        done = {n.get("nominator_volunteer_id") for n in noms}
+        text, label = NOMINATION_BLAST, "mencalonkan"
+    elif status == "voting_open":
+        votes = await repo.list_votes(election_id=election["id"])
+        done = {v.get("voter_volunteer_id") for v in votes}
+        finalists = await repo.get_finalists(election_id=election["id"])
+        text, label = _voting_blast_text(finalists), "vote"
+    else:
+        return (
+            f"Resend hanya saat pencalonan/voting DIBUKA. Status sekarang: {status}."
+        )
+
+    belum = [m for m in members if m["id"] not in done]
+    if not belum:
+        return f"Semua anggota {team_name} sudah {label}. Tidak ada yang perlu di-resend."
+
+    result = await _send_to_many(belum, text)
+    return (
+        f"Resend ke {len(belum)} anggota yang belum {label} (kelompok {team_name}).\n"
+        f"Terkirim: {result['sent']}/{len(belum)}."
+        + _failed_note(result["failed"])
+    )
 
 
 # --------------------------------------------------------------------------- #

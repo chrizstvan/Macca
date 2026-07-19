@@ -211,6 +211,11 @@ class FasilitatorHubAgent(
             await self.save_chat_history(telegram_id, "user", message, self.name)
             await self.save_chat_history(telegram_id, "assistant", reply, self.name)
             return reply
+        if self._is_election_resend(message):
+            reply = await self._handle_election_resend(message)
+            await self.save_chat_history(telegram_id, "user", message, self.name)
+            await self.save_chat_history(telegram_id, "assistant", reply, self.name)
+            return reply
 
         # Action-item reminder flow — intercept BEFORE intent classification so
         # "buatkan reminder presensi" isn't swallowed by the generic

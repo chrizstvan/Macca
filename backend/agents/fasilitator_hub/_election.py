@@ -53,6 +53,11 @@ ELECTION_STATUS_PATTERN = re.compile(
     r"^\s*(?:status|cek)\s+pemilihan\s+(?P<team>.+)$",
     re.IGNORECASE | re.DOTALL,
 )
+# "resend pemilihan X" / "blast ulang pemilihan X"
+ELECTION_RESEND_PATTERN = re.compile(
+    r"^\s*(?:resend|blast\s+ulang)\s+pemilihan\s+(?P<team>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
 # Filler words stripped when extracting the team name from the command tail.
 _TEAM_FILLER = re.compile(r"\b(ketua|kelompok|kel|untuk|tim|grup|group)\b", re.IGNORECASE)
 
@@ -91,6 +96,10 @@ class ElectionMixin:
     @staticmethod
     def _is_election_status(message: str) -> bool:
         return bool(message and ELECTION_STATUS_PATTERN.match(message))
+
+    @staticmethod
+    def _is_election_resend(message: str) -> bool:
+        return bool(message and ELECTION_RESEND_PATTERN.match(message))
 
     @staticmethod
     def _extract_election_team(raw: str) -> str:
@@ -188,3 +197,11 @@ class ElectionMixin:
         phrase = self._extract_election_team((m.group("team") if m else "") or "")
         team = await self._resolve_team(phrase) or phrase
         return await show_election_status(team)
+
+    async def _handle_election_resend(self, message: str) -> str:
+        from backend.agents.election_handler import resend_open_blast
+
+        m = ELECTION_RESEND_PATTERN.match(message)
+        phrase = self._extract_election_team((m.group("team") if m else "") or "")
+        team = await self._resolve_team(phrase) or phrase
+        return await resend_open_blast(team)

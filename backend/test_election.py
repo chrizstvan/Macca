@@ -38,8 +38,9 @@ OTHER_TEAM = f"TEST_ELECT_{uuid.uuid4().hex[:6]}"
 _blasts: list[tuple] = []
 
 
-async def _fake_notify(volunteer: dict, text: str) -> None:
+async def _fake_notify(volunteer: dict, text: str) -> bool:
     _blasts.append((volunteer.get("id"), text))
+    return True
 
 
 results: dict[str, list[bool]] = {}
